@@ -3976,6 +3976,96 @@ app.patch('/api/owner/accounts/:id/status', requireAuth, requireOwner, (req, res
   res.json({ ok: true, accountStatus });
 });
 
+const ownerPasswordResetCooldowns = new Map<string, number>();
+const PASSWORD_RESET_COOLDOWN_MS = 30_000;
+
+app.post('/api/owner/accounts/:id/password-reset-prepare', requireAuth, requireOwner, (req, res) => {
+  const { id } = req.params;
+  const { email, saveEmailToAccount } = req.body || {};
+
+  const target = db.prepare(`SELECT * FROM users WHERE id = ?`).get(id) as any;
+  if (!target) {
+    res.status(404).json({ error: 'Registered user account not found.' });
+    return;
+  }
+
+  const rawEmail = String(email || target.firebase_email || '').trim().toLowerCase();
+  if (!rawEmail || rawEmail.length > 160 || !/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(rawEmail)) {
+    res.status(400).json({ error: 'A valid email address is required to trigger a Firebase password reset email.' });
+    return;
+  }
+
+  // Protected Owner email cannot be overridden to an unverified address
+  if (target.role === 'owner' && target.firebase_email && rawEmail !== String(target.firebase_email).toLowerCase()) {
+    res.status(403).json({
+      error: `For security, Owner password reset emails can only be sent to the verified Owner email (${target.firebase_email}).`,
+    });
+    return;
+  }
+
+  const lastSentAt = ownerPasswordResetCooldowns.get(target.id) || 0;
+  const elapsed = Date.now() - lastSentAt;
+  if (elapsed < PASSWORD_RESET_COOLDOWN_MS) {
+    const waitSec = Math.ceil((PASSWORD_RESET_COOLDOWN_MS - elapsed) / 1000);
+    res.status(429).json({
+      error: `A password reset email was just sent for ${target.username}. Please wait ${waitSec}s before sending another.`,
+    });
+    return;
+  }
+
+  let emailSaved = false;
+  if (saveEmailToAccount && target.role !== 'owner' && rawEmail !== String(target.firebase_email || '').toLowerCase()) {
+    db.prepare(`UPDATE users SET firebase_email = ? WHERE id = ?`).run(rawEmail, target.id);
+    emailSaved = true;
+  }
+
+  res.json({
+    ok: true,
+    targetUserId: target.id,
+    username: target.username,
+    email: rawEmail,
+    emailSaved,
+  });
+});
+
+app.post('/api/owner/accounts/:id/password-reset-audit', requireAuth, requireOwner, (req, res) => {
+  const { id } = req.params;
+  const { email, reason } = req.body || {};
+
+  const target = db.prepare(`SELECT * FROM users WHERE id = ?`).get(id) as any;
+  if (!target) {
+    res.status(404).json({ error: 'Registered user account not found.' });
+    return;
+  }
+
+  const cleanEmail = String(email || target.firebase_email || '').trim().toLowerCase().slice(0, 160);
+  if (!cleanEmail || !/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(cleanEmail)) {
+    res.status(400).json({ error: 'Valid email is required for audit logging.' });
+    return;
+  }
+
+  ownerPasswordResetCooldowns.set(target.id, Date.now());
+
+  addAuditLog({
+    adminId: req.user!.id,
+    adminName: req.user!.fullName,
+    action: 'OWNER_PASSWORD_RESET_EMAIL_SENT',
+    entityType: 'users',
+    entityId: target.id,
+    afterData: {
+      username: target.username,
+      fullName: target.full_name,
+      role: target.role,
+      email: cleanEmail,
+      provider: 'firebase_auth_sdk',
+    },
+    reason: String(reason || `Super Admin triggered Firebase password reset email for ${target.username}`).slice(0, 400),
+  });
+
+  broadcastUpdate('all');
+  res.json({ ok: true });
+});
+
 app.delete('/api/owner/accounts/:id', requireAuth, requireOwner, (req, res) => {
   const { id } = req.params;
   const target = db.prepare(`SELECT * FROM users WHERE id = ?`).get(id) as any;

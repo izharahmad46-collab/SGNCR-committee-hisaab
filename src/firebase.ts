@@ -2,6 +2,7 @@ import { initializeApp } from 'firebase/app';
 import {
   getAuth,
   GoogleAuthProvider,
+  sendPasswordResetEmail,
   signInWithPopup,
   signOut,
   type User as FirebaseUser,
@@ -114,6 +115,40 @@ export async function signInWithGoogle(): Promise<FirebaseUser> {
 export async function signOutFirebase(): Promise<void> {
   if (auth.currentUser) {
     await signOut(auth);
+  }
+}
+
+export async function triggerFirebasePasswordResetEmail(email: string): Promise<{ email: string }> {
+  const cleanEmail = String(email || '').trim().toLowerCase();
+  if (!cleanEmail || cleanEmail.length > 160 || !/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(cleanEmail)) {
+    throw new Error('Please enter a valid registered email address.');
+  }
+
+  try {
+    await sendPasswordResetEmail(auth, cleanEmail);
+    return { email: cleanEmail };
+  } catch (err: any) {
+    const code = String(err?.code || '');
+    if (code === 'auth/user-not-found') {
+      throw new Error(
+        `No Firebase Auth account exists for "${cleanEmail}". Ask the user to sign in once with Firebase or register this email in Firebase Authentication first.`
+      );
+    }
+    if (code === 'auth/invalid-email') {
+      throw new Error('The email address format is invalid.');
+    }
+    if (code === 'auth/too-many-requests') {
+      throw new Error('Too many password reset requests for this email. Please wait a few minutes and try again.');
+    }
+    if (code === 'auth/operation-not-allowed') {
+      throw new Error(
+        'Email/Password sign-in is not yet enabled in Firebase Console. Enable it under Firebase Console → Authentication → Sign-in method → Email/Password.'
+      );
+    }
+    if (code === 'auth/network-request-failed') {
+      throw new Error('Network error while contacting Firebase Authentication. Please check your internet connection.');
+    }
+    throw new Error(err?.message || 'Failed to send Firebase password reset email.');
   }
 }
 

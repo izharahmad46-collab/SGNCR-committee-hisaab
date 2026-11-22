@@ -25,9 +25,11 @@ import {
   Eye,
   EyeOff,
   Download,
+  Mail,
+  Send,
 } from 'lucide-react';
 import { apiRequest, downloadAppSourceZip } from '../lib/api';
-import { signInWithGoogle } from '../firebase';
+import { signInWithGoogle, triggerFirebasePasswordResetEmail } from '../firebase';
 import { syncSettingsToFirestore, syncBankUpiToFirestore } from '../lib/firestoreSync';
 import type {
   AdminPermissions,
@@ -168,6 +170,13 @@ export const OwnerControlPanelView: React.FC<OwnerControlPanelViewProps> = ({
     reason: '',
   });
   const [confirmDeleteAcctId, setConfirmDeleteAcctId] = useState<string | null>(null);
+
+  // Firebase Password Reset Email Modal
+  const [resetEmailAcct, setResetEmailAcct] = useState<OwnerManagedAccount | null>(null);
+  const [resetEmailTarget, setResetEmailTarget] = useState('');
+  const [resetEmailReason, setResetEmailReason] = useState('');
+  const [resetEmailSaveToProfile, setResetEmailSaveToProfile] = useState(true);
+  const [sendingResetEmail, setSendingResetEmail] = useState(false);
 
   // Committee Settings & Branding Form
   const [committeeForm, setCommitteeForm] = useState({
@@ -620,6 +629,63 @@ export const OwnerControlPanelView: React.FC<OwnerControlPanelViewProps> = ({
       onNotify(err?.message || 'Failed to download source ZIP.', 'error');
     } finally {
       setBusy(false);
+    }
+  }
+
+  function openResetEmailModal(acct: OwnerManagedAccount) {
+    setResetEmailAcct(acct);
+    setResetEmailTarget(acct.firebaseEmail || '');
+    setResetEmailReason('');
+    setResetEmailSaveToProfile(!acct.firebaseEmail && acct.role !== 'owner');
+  }
+
+  async function handleSendPasswordResetEmail(e: React.FormEvent) {
+    e.preventDefault();
+    if (!resetEmailAcct) return;
+    const cleanEmail = resetEmailTarget.trim().toLowerCase();
+    if (!cleanEmail) {
+      onNotify('Please enter the registered Firebase email address for this user.', 'error');
+      return;
+    }
+
+    setSendingResetEmail(true);
+    try {
+      // 1) Server-side Owner verification, email validation & cooldown check
+      const prep = await apiRequest<{ ok: boolean; email: string; emailSaved: boolean }>(
+        `/api/owner/accounts/${resetEmailAcct.id}/password-reset-prepare`,
+        {
+          method: 'POST',
+          body: {
+            email: cleanEmail,
+            saveEmailToAccount: resetEmailSaveToProfile && resetEmailAcct.role !== 'owner',
+          },
+        }
+      );
+
+      // 2) Dispatch secure one-time password reset email via Firebase Auth SDK
+      await triggerFirebasePasswordResetEmail(prep.email);
+
+      // 3) Record immutable Owner audit entry
+      await apiRequest(`/api/owner/accounts/${resetEmailAcct.id}/password-reset-audit`, {
+        method: 'POST',
+        body: {
+          email: prep.email,
+          reason:
+            resetEmailReason.trim() ||
+            `Super Admin triggered Firebase password reset email for ${resetEmailAcct.username}`,
+        },
+      });
+
+      onNotify(
+        `Secure Firebase password reset email sent to ${prep.email} for ${resetEmailAcct.fullName} (${resetEmailAcct.username}).`,
+        'success'
+      );
+      setResetEmailAcct(null);
+      await fetchOverview();
+    } catch (err: any) {
+      onNotify(err?.message || 'Failed to trigger Firebase password reset email.', 'error');
+    } finally {
+      setSendingResetEmail(false);
     }
   }
 
@@ -1090,14 +1156,26 @@ export const OwnerControlPanelView: React.FC<OwnerControlPanelViewProps> = ({
                         </td>
                         <td className="py-3 px-4 text-right">
                           {isOwnerRow ? (
-                            <button
-                              type="button"
-                              onClick={() => setSubTab('security')}
-                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-100 dark:bg-amber-900/40 text-amber-900 dark:text-amber-200 text-xs font-bold"
-                            >
-                              <Lock className="w-3.5 h-3.5" />
-                              <span>Protected Owner</span>
-                            </button>
+                            <div className="inline-flex flex-wrap items-center justify-end gap-1.5">
+                              <button
+                                type="button"
+                                disabled={busy || sendingResetEmail}
+                                onClick={() => openResetEmailModal(acct)}
+                                className="px-2.5 py-1.5 rounded-lg border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 text-xs font-semibold inline-flex items-center gap-1"
+                                title="Send Firebase Auth Password Reset Email"
+                              >
+                                <Mail className="w-3.5 h-3.5" />
+                                <span>Reset Email</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setSubTab('security')}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-100 dark:bg-amber-900/40 text-amber-900 dark:text-amber-200 text-xs font-bold"
+                              >
+                                <Lock className="w-3.5 h-3.5" />
+                                <span>Protected Owner</span>
+                              </button>
+                            </div>
                           ) : (
                             <div className="inline-flex flex-wrap items-center justify-end gap-1.5">
                               {acct.accountStatus !== 'active' && (
@@ -1130,6 +1208,16 @@ export const OwnerControlPanelView: React.FC<OwnerControlPanelViewProps> = ({
                                   Suspend
                                 </button>
                               )}
+                              <button
+                                type="button"
+                                disabled={busy || sendingResetEmail}
+                                onClick={() => openResetEmailModal(acct)}
+                                className="px-2.5 py-1.5 rounded-lg border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 text-xs font-semibold inline-flex items-center gap-1"
+                                title="Send Firebase Auth Password Reset Email"
+                              >
+                                <Mail className="w-3.5 h-3.5" />
+                                <span>Reset Email</span>
+                              </button>
                               <button
                                 type="button"
                                 onClick={() => openEditAccount(acct)}
@@ -1176,6 +1264,111 @@ export const OwnerControlPanelView: React.FC<OwnerControlPanelViewProps> = ({
               </table>
             </div>
           </div>
+
+          {/* Send Firebase Password Reset Email Modal */}
+          {resetEmailAcct && (
+            <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
+              <form
+                onSubmit={handleSendPasswordResetEmail}
+                className="w-full max-w-lg rounded-2xl bg-white dark:bg-[#121D18] border border-slate-200 dark:border-slate-800 p-5 sm:p-6 space-y-4 shadow-xl"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="space-y-1">
+                    <div className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-[#0B4F32] dark:text-emerald-400">
+                      <Mail className="w-4 h-4" />
+                      <span>Firebase Auth Password Reset</span>
+                    </div>
+                    <h3 className="text-base font-bold text-slate-900 dark:text-slate-100">
+                      Send Secure Reset Email
+                    </h3>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setResetEmailAcct(null)}
+                    className="text-slate-400 hover:text-slate-600"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                <div className="rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 p-3.5 text-xs space-y-1">
+                  <div className="font-bold text-slate-900 dark:text-slate-100">
+                    {resetEmailAcct.fullName}
+                  </div>
+                  <div className="text-slate-500 dark:text-slate-400 font-data">
+                    Login ID: {resetEmailAcct.username} · Role: {roleLabel(resetEmailAcct.role)}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">
+                    Registered Firebase Email Address *
+                  </label>
+                  <input
+                    type="email"
+                    required
+                    readOnly={resetEmailAcct.role === 'owner' && Boolean(resetEmailAcct.firebaseEmail)}
+                    value={resetEmailTarget}
+                    onChange={(e) => setResetEmailTarget(e.target.value)}
+                    placeholder="user@example.com"
+                    className="w-full min-h-[42px] px-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm font-data read-only:opacity-75 read-only:bg-slate-100 dark:read-only:bg-slate-800"
+                  />
+                  {resetEmailAcct.role === 'owner' ? (
+                    <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-300">
+                      Locked to the verified Owner Firebase email for account security.
+                    </p>
+                  ) : (
+                    <label className="mt-2 inline-flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={resetEmailSaveToProfile}
+                        onChange={(e) => setResetEmailSaveToProfile(e.target.checked)}
+                        className="rounded border-slate-300 text-[#0B4F32] focus:ring-[#0B4F32]"
+                      />
+                      <span>Save this email address to the user&apos;s profile</span>
+                    </label>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">
+                    Audit Reason (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    maxLength={300}
+                    value={resetEmailReason}
+                    onChange={(e) => setResetEmailReason(e.target.value)}
+                    placeholder="e.g., User requested password recovery"
+                    className="w-full min-h-[42px] px-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm"
+                  />
+                </div>
+
+                <div className="rounded-xl bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900/50 p-3 text-[11px] text-emerald-900 dark:text-emerald-200 leading-relaxed">
+                  Firebase Authentication will email a secure, single-use password reset link directly to the address above. This action is logged in the immutable Owner Audit Trail.
+                </div>
+
+                <div className="flex justify-end gap-2 pt-1">
+                  <button
+                    type="button"
+                    disabled={sendingResetEmail}
+                    onClick={() => setResetEmailAcct(null)}
+                    className="min-h-[42px] px-4 rounded-xl border border-slate-300 dark:border-slate-700 text-xs font-semibold"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={sendingResetEmail}
+                    className="min-h-[42px] px-5 rounded-xl bg-[#0B4F32] hover:bg-[#093F28] text-white text-xs font-bold inline-flex items-center gap-2 disabled:opacity-60"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    <span>{sendingResetEmail ? 'Sending Reset Email...' : 'Send Reset Email'}</span>
+                  </button>
+                </div>
+              </form>
+            </div>
+          )}
 
           {/* Edit Account Modal */}
           {editingAcct && (
