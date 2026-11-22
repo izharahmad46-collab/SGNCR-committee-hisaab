@@ -1,0 +1,8 @@
+{
+  "name": "S.G.N committee hisaab",
+  "description": "Smart Committee Ka Smart Hisab for tracking collective funds and individual expense contributions with automated reporting features and real-time balance updates for all members.(md izhar ahmad ragdih)",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

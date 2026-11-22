@@ -1,0 +1,348 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    --font-sans: 'Plus Jakarta Sans', 'Noto Sans Devanagari', system-ui, -apple-system, sans-serif;
+    --font-urdu: 'Noto Nastaliq Urdu', 'Plus Jakarta Sans', serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+  }
+
+  html {
+    font-family: var(--font-sans);
+    scroll-behavior: smooth;
+  }
+
+  html[lang="ur"] {
+    font-family: var(--font-urdu);
+  }
+
+  html[lang="ur"] body {
+    line-height: 2;
+  }
+
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .font-data {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  h1, h2, h3 {
+    text-wrap: balance;
+  }
+}
+
+/* Safe area padding for mobile bottom navigation */
+.pb-safe {
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+}
+
+/* Custom subtle scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.25);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.45);
+}
+
+/* Print-only utility defaults on screen */
+.print-only,
+.print-only-flex,
+.print-only-grid {
+  display: none;
+}
+
+/* Print Styles for Official Financial Statements & Receipts */
+@page {
+  size: A4 portrait;
+  margin: 12mm 12mm 14mm 12mm;
+}
+
+@media print {
+  html,
+  body {
+    background: #ffffff !important;
+    color: #0f172a !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    font-size: 10pt !important;
+    line-height: 1.4 !important;
+  }
+
+  /* Reset dark mode surface and typography overrides for crisp paper/PDF output */
+  html.dark,
+  html.dark body {
+    background: #ffffff !important;
+    color: #0f172a !important;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  .print-only {
+    display: block !important;
+  }
+
+  .print-only-flex {
+    display: flex !important;
+  }
+
+  .print-only-grid {
+    display: grid !important;
+  }
+
+  /* Remove desktop sidebar offset and bottom nav spacing in print */
+  .print-shell {
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+    margin: 0 !important;
+    background: #ffffff !important;
+    color: #0f172a !important;
+  }
+
+  .print-main {
+    max-width: none !important;
+    width: 100% !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  /* Statement document container */
+  .print-statement,
+  .print-card {
+    background: #ffffff !important;
+    color: #0f172a !important;
+    border: none !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+  }
+
+  /* Official letterhead header */
+  .print-letterhead {
+    background: #ffffff !important;
+    color: #0f172a !important;
+    border-bottom: 2px solid #0b4f32 !important;
+    padding-bottom: 12px !important;
+    margin-bottom: 14px !important;
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+    flex-direction: row !important;
+    text-align: left !important;
+    align-items: center !important;
+  }
+
+  html[dir="rtl"] .print-letterhead {
+    text-align: right !important;
+  }
+
+  .print-letterhead h2 {
+    color: #0b4f32 !important;
+    font-size: 15pt !important;
+    line-height: 1.25 !important;
+  }
+
+  .print-letterhead p {
+    color: #334155 !important;
+  }
+
+  .print-period-banner {
+    color: #0b4f32 !important;
+    font-weight: 700 !important;
+  }
+
+  .print-meta-bar {
+    border-top: 1px solid #e2e8f0 !important;
+    padding-top: 6px !important;
+    margin-top: 8px !important;
+    color: #475569 !important;
+    font-size: 8.5pt !important;
+    justify-content: space-between !important;
+    gap: 12px !important;
+  }
+
+  /* Executive summary 3-column financial metrics grid */
+  .print-summary-grid {
+    display: grid !important;
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+    gap: 8px !important;
+  }
+
+  .print-kpi-card {
+    background: #f8fafc !important;
+    border: 1px solid #cbd5e1 !important;
+    border-radius: 6px !important;
+    padding: 8px 10px !important;
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
+
+  .print-kpi-label {
+    color: #475569 !important;
+    font-size: 8pt !important;
+    line-height: 1.25 !important;
+  }
+
+  .print-kpi-value {
+    font-size: 10.5pt !important;
+    line-height: 1.3 !important;
+    margin-top: 3px !important;
+  }
+
+  /* High-contrast semantic ink colors for printed financial figures */
+  .print-ink-primary {
+    color: #0f172a !important;
+  }
+
+  .print-ink-emerald {
+    color: #065f46 !important;
+  }
+
+  .print-ink-rose {
+    color: #9f1239 !important;
+  }
+
+  .print-ink-amber {
+    color: #92400e !important;
+  }
+
+  .print-ink-muted {
+    color: #475569 !important;
+  }
+
+  /* Section headings & pagination guards */
+  .print-section {
+    margin-top: 16px !important;
+  }
+
+  .print-section-heading {
+    color: #0b4f32 !important;
+    font-size: 11pt !important;
+    font-weight: 700 !important;
+    border-bottom: 1px solid #cbd5e1 !important;
+    padding-bottom: 4px !important;
+    margin-bottom: 8px !important;
+    break-after: avoid !important;
+    page-break-after: avoid !important;
+  }
+
+  .print-avoid-break {
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
+
+  .print-break-before {
+    break-before: page !important;
+    page-break-before: always !important;
+  }
+
+  /* Financial statement tables */
+  .print-table-wrap {
+    overflow: visible !important;
+    border: 1px solid #94a3b8 !important;
+    border-radius: 4px !important;
+    background: #ffffff !important;
+  }
+
+  .print-table {
+    width: 100% !important;
+    min-width: 0 !important;
+    border-collapse: collapse !important;
+    font-size: 8.5pt !important;
+    color: #0f172a !important;
+  }
+
+  .print-table thead {
+    display: table-header-group !important;
+  }
+
+  .print-table tfoot {
+    display: table-footer-group !important;
+  }
+
+  .print-table thead tr {
+    background: #0b4f32 !important;
+    color: #ffffff !important;
+    border-bottom: 1px solid #0b4f32 !important;
+  }
+
+  .print-table thead th {
+    color: #ffffff !important;
+    padding: 6px 8px !important;
+    font-weight: 700 !important;
+  }
+
+  .print-table tbody tr {
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+    border-bottom: 1px solid #e2e8f0 !important;
+    background: #ffffff !important;
+  }
+
+  .print-table tbody tr:nth-child(even) {
+    background: #f8fafc !important;
+  }
+
+  .print-table tbody td {
+    padding: 5px 8px !important;
+    color: #0f172a !important;
+    vertical-align: top !important;
+  }
+
+  .print-table tfoot tr {
+    background: #ecfdf5 !important;
+    border-top: 2px solid #0b4f32 !important;
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
+
+  .print-table tfoot td {
+    padding: 6px 8px !important;
+    color: #0f172a !important;
+    font-weight: 700 !important;
+  }
+
+  /* Official signatory block */
+  .print-signatures {
+    margin-top: 28px !important;
+    padding-top: 12px !important;
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+    gap: 24px !important;
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
+
+  .print-signature-line {
+    border-top: 1px solid #334155 !important;
+    padding-top: 6px !important;
+    margin-top: 36px !important;
+    text-align: center !important;
+    font-size: 8.5pt !important;
+    font-weight: 600 !important;
+    color: #1e293b !important;
+  }
+
+  .print-footer-note {
+    margin-top: 16px !important;
+    padding-top: 8px !important;
+    border-top: 1px dashed #cbd5e1 !important;
+    text-align: center !important;
+    font-size: 7.5pt !important;
+    color: #64748b !important;
+  }
+}
