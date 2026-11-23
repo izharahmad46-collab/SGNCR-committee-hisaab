@@ -621,6 +621,59 @@ export async function syncCommitteeLedgerToFirestore(
   return { syncedCollections: 13, syncedDocuments };
 }
 
+export async function appendAuditLogToFirestore(log: {
+  id: string;
+  timestamp: string;
+  adminId: string;
+  adminName: string;
+  action: string;
+  entityType: string;
+  entityId: string;
+  beforeData?: string | null;
+  afterData?: string | null;
+  reason?: string;
+}): Promise<boolean> {
+  const fbUser = auth.currentUser;
+  if (!fbUser || !fbUser.emailVerified) {
+    return false;
+  }
+
+  const isAdmin = await isFirebaseAdminUser(fbUser);
+  if (!isAdmin) {
+    return false;
+  }
+
+  const id = sanitizeId(log.id || `aud_${Date.now()}`);
+  const ref = doc(db, 'audit_logs', id);
+  const path = `audit_logs/${id}`;
+
+  try {
+    const snap = await getDoc(ref);
+    if (snap.exists()) {
+      return true;
+    }
+
+    const lDoc: Record<string, unknown> = {
+      id,
+      timestamp: clip(log.timestamp || new Date().toISOString(), 40),
+      adminId: clip(log.adminId || fbUser.uid, 128),
+      adminName: clip(log.adminName || fbUser.displayName || fbUser.email || 'Super Admin', 120),
+      action: clip(log.action || 'OWNER_PASSWORD_RESET_EMAIL_SENT', 80),
+      entityType: clip(log.entityType || 'users', 80),
+      entityId: clip(log.entityId || id, 120),
+      createdAt: serverTimestamp(),
+    };
+    if (log.beforeData) lDoc.beforeData = clip(log.beforeData, 4000);
+    if (log.afterData) lDoc.afterData = clip(log.afterData, 4000);
+    if (log.reason) lDoc.reason = clip(log.reason, 500);
+
+    await setDoc(ref, lDoc);
+    return true;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, path);
+  }
+}
+
 export async function fetchCloudStatus(fbUser: FirebaseUser | null): Promise<CloudStatusSnapshot> {
   if (!fbUser || !fbUser.emailVerified) {
     return {

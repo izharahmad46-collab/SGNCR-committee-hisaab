@@ -1,4 +1,5 @@
 import express from 'express';
+import http from 'http';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import fs from 'fs';
@@ -4030,7 +4031,7 @@ app.post('/api/owner/accounts/:id/password-reset-prepare', requireAuth, requireO
 
 app.post('/api/owner/accounts/:id/password-reset-audit', requireAuth, requireOwner, (req, res) => {
   const { id } = req.params;
-  const { email, reason } = req.body || {};
+  const { email, reason, dispatchedVia } = req.body || {};
 
   const target = db.prepare(`SELECT * FROM users WHERE id = ?`).get(id) as any;
   if (!target) {
@@ -4044,26 +4045,37 @@ app.post('/api/owner/accounts/:id/password-reset-audit', requireAuth, requireOwn
     return;
   }
 
+  const provider = dispatchedVia === 'cloud_function' ? 'firebase_cloud_function' : 'firebase_auth_sdk';
+  const triggeredAt = new Date().toISOString();
   ownerPasswordResetCooldowns.set(target.id, Date.now());
 
-  addAuditLog({
+  const auditLog = addAuditLog({
     adminId: req.user!.id,
-    adminName: req.user!.fullName,
+    adminName: `${req.user!.fullName} (${req.user!.username})`,
     action: 'OWNER_PASSWORD_RESET_EMAIL_SENT',
     entityType: 'users',
     entityId: target.id,
     afterData: {
-      username: target.username,
-      fullName: target.full_name,
-      role: target.role,
-      email: cleanEmail,
-      provider: 'firebase_auth_sdk',
+      targetUserId: target.id,
+      targetUsername: target.username,
+      targetFullName: target.full_name,
+      targetRole: target.role,
+      targetEmail: cleanEmail,
+      triggeredByAdminId: req.user!.id,
+      triggeredByUsername: req.user!.username,
+      triggeredByName: req.user!.fullName,
+      triggeredByRole: req.user!.role,
+      triggeredAt,
+      provider,
     },
-    reason: String(reason || `Super Admin triggered Firebase password reset email for ${target.username}`).slice(0, 400),
+    reason: String(
+      reason ||
+        `Administrator ${req.user!.fullName} (${req.user!.username}) sent Firebase password reset email to ${cleanEmail} for ${target.username}`
+    ).slice(0, 400),
   });
 
   broadcastUpdate('all');
-  res.json({ ok: true });
+  res.json({ ok: true, auditLog });
 });
 
 app.delete('/api/owner/accounts/:id', requireAuth, requireOwner, (req, res) => {
@@ -4398,10 +4410,17 @@ app.post('/api/owner/branding/app-name', requireAuth, requireOwner, async (req, 
 async function startServer() {
   const isProd = process.env.NODE_ENV === 'production';
   const distDir = path.resolve(process.cwd(), 'dist');
+  const httpServer = http.createServer(app);
 
   if (!isProd) {
+    const hmrDisabled = process.env.DISABLE_HMR === 'true';
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: !hmrDisabled,
+        ws: { server: httpServer },
+        allowedHosts: true,
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -4413,7 +4432,7 @@ async function startServer() {
   }
 
   const PORT = Number(process.env.PORT || 3000);
-  app.listen(PORT, '0.0.0.0', () => {
+  httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`S.G.N Committee Server listening on http://0.0.0.0:${PORT}`);
   });
 }

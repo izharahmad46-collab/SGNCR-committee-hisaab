@@ -644,22 +644,52 @@ export function addAuditLog(params: {
   beforeData?: unknown;
   afterData?: unknown;
   reason?: string;
-}): void {
+}): {
+  id: string;
+  timestamp: string;
+  adminId: string;
+  adminName: string;
+  action: string;
+  entityType: string;
+  entityId: string;
+  beforeData: string | null;
+  afterData: string | null;
+  reason: string;
+} {
+  const id = crypto.randomUUID();
+  const timestamp = new Date().toISOString();
+  const beforeData = params.beforeData !== undefined ? JSON.stringify(params.beforeData) : null;
+  const afterData = params.afterData !== undefined ? JSON.stringify(params.afterData) : null;
+  const reason = params.reason || '';
+
   db.prepare(
     `INSERT INTO audit_logs (id, timestamp, admin_id, admin_name, action, entity_type, entity_id, before_data, after_data, reason)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
-    crypto.randomUUID(),
-    new Date().toISOString(),
+    id,
+    timestamp,
     params.adminId,
     params.adminName,
     params.action,
     params.entityType,
     params.entityId,
-    params.beforeData !== undefined ? JSON.stringify(params.beforeData) : null,
-    params.afterData !== undefined ? JSON.stringify(params.afterData) : null,
-    params.reason || ''
+    beforeData,
+    afterData,
+    reason
   );
+
+  return {
+    id,
+    timestamp,
+    adminId: params.adminId,
+    adminName: params.adminName,
+    action: params.action,
+    entityType: params.entityType,
+    entityId: params.entityId,
+    beforeData,
+    afterData,
+    reason,
+  };
 }
 
 export function addNotification(params: {

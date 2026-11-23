@@ -140,29 +140,38 @@ export const triggerUserPasswordReset = onCall(
 
     // 6) Record immutable audit log entry in Firestore
     const auditId = `aud_pwreset_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const triggeredAt = new Date().toISOString();
+    const adminDisplayName = String(request.auth.token.name || callerEmail || 'Super Admin').slice(0, 120);
     await db
       .collection('audit_logs')
       .doc(auditId)
       .set({
         id: auditId,
-        timestamp: new Date().toISOString(),
+        timestamp: triggeredAt,
         adminId: request.auth.uid,
-        adminName: String(request.auth.token.name || callerEmail || 'Super Admin').slice(0, 100),
+        adminName: adminDisplayName,
         action: 'OWNER_PASSWORD_RESET_EMAIL_SENT',
         entityType: 'users',
         entityId: targetUserId,
         reason,
         afterData: JSON.stringify({
-          email: cleanEmail,
-          username: targetUsername,
+          targetEmail: cleanEmail,
+          targetUsername,
+          triggeredByAdminId: request.auth.uid,
+          triggeredByName: adminDisplayName,
+          triggeredByEmail: callerEmail,
+          triggeredAt,
           provider: 'firebase_cloud_function',
         }),
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
       });
 
     return {
       ok: true,
       email: cleanEmail,
       dispatchedVia: 'cloud_function',
+      auditLogId: auditId,
+      timestamp: triggeredAt,
     };
   }
 );

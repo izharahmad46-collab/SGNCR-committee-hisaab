@@ -30,7 +30,11 @@ import {
 } from 'lucide-react';
 import { apiRequest, downloadAppSourceZip } from '../lib/api';
 import { signInWithGoogle, invokePasswordResetCloudFunction } from '../firebase';
-import { syncSettingsToFirestore, syncBankUpiToFirestore } from '../lib/firestoreSync';
+import {
+  syncSettingsToFirestore,
+  syncBankUpiToFirestore,
+  appendAuditLogToFirestore,
+} from '../lib/firestoreSync';
 import type {
   AdminPermissions,
   AccountStatus,
@@ -178,6 +182,7 @@ export const OwnerControlPanelView: React.FC<OwnerControlPanelViewProps> = ({
   const [resetEmailSaveToProfile, setResetEmailSaveToProfile] = useState(true);
   const [sendingResetEmail, setSendingResetEmail] = useState(false);
   const [resettingAcctId, setResettingAcctId] = useState<string | null>(null);
+  const [resetSentAcctId, setResetSentAcctId] = useState<string | null>(null);
 
   // Committee Settings & Branding Form
   const [committeeForm, setCommitteeForm] = useState({
@@ -678,23 +683,52 @@ export const OwnerControlPanelView: React.FC<OwnerControlPanelViewProps> = ({
         reason: finalReason,
       });
 
-      // 3) Record immutable Owner audit entry on server
-      await apiRequest(`/api/owner/accounts/${acct.id}/password-reset-audit`, {
+      // 3) Record immutable audit trail entry in SQLite DB (with timestamp + acting administrator)
+      const auditRes = await apiRequest<{
+        ok: boolean;
+        auditLog?: {
+          id: string;
+          timestamp: string;
+          adminId: string;
+          adminName: string;
+          action: string;
+          entityType: string;
+          entityId: string;
+          beforeData: string | null;
+          afterData: string | null;
+          reason: string;
+        };
+      }>(`/api/owner/accounts/${acct.id}/password-reset-audit`, {
         method: 'POST',
         body: {
           email: dispatched.email,
-          reason: `${finalReason} (${dispatched.dispatchedVia === 'cloud_function' ? 'Cloud Function' : 'Firebase Auth SDK'})`,
+          dispatchedVia: dispatched.dispatchedVia,
+          reason: `${finalReason} — triggered by ${user.fullName} (${user.username})`,
         },
       });
 
+      // 4) Mirror the immutable audit trail record directly to Firestore `audit_logs` when signed in
+      if (auditRes.auditLog && dispatched.dispatchedVia !== 'cloud_function') {
+        void appendAuditLogToFirestore(auditRes.auditLog).catch((err) => {
+          console.warn('Firestore audit_logs mirror skipped:', err);
+        });
+      }
+
+      const loggedTime = auditRes.auditLog?.timestamp
+        ? new Date(auditRes.auditLog.timestamp).toLocaleTimeString()
+        : new Date().toLocaleTimeString();
+
       onNotify(
-        `Password reset email sent to ${dispatched.email} for ${acct.fullName} (${acct.username}) via ${
-          dispatched.dispatchedVia === 'cloud_function' ? 'Firebase Cloud Function' : 'Firebase Auth SDK'
-        }.`,
+        `Password reset email sent to ${dispatched.email} for ${acct.fullName} (${acct.username}). Logged in audit trail by ${user.fullName} at ${loggedTime}.`,
         'success'
       );
+      setResetSentAcctId(acct.id);
+      setTimeout(() => {
+        setResetSentAcctId((prev) => (prev === acct.id ? null : prev));
+      }, 5000);
       setResetEmailAcct(null);
       await fetchOverview();
+      await onRefresh();
     } catch (err: any) {
       onNotify(err?.message || 'Failed to trigger Firebase password reset email.', 'error');
     } finally {
@@ -1202,7 +1236,13 @@ export const OwnerControlPanelView: React.FC<OwnerControlPanelViewProps> = ({
                                 }
                               >
                                 <Mail className={`w-3.5 h-3.5 ${resettingAcctId === acct.id ? 'animate-pulse' : ''}`} />
-                                <span>{resettingAcctId === acct.id ? 'Sending...' : 'Send Reset Email'}</span>
+                                <span>
+                                  {resettingAcctId === acct.id
+                                    ? 'Sending...'
+                                    : resetSentAcctId === acct.id
+                                    ? 'Reset Link Sent'
+                                    : 'Send Password Reset Email'}
+                                </span>
                               </button>
                               <button
                                 type="button"
@@ -1257,7 +1297,13 @@ export const OwnerControlPanelView: React.FC<OwnerControlPanelViewProps> = ({
                                 }
                               >
                                 <Mail className={`w-3.5 h-3.5 ${resettingAcctId === acct.id ? 'animate-pulse' : ''}`} />
-                                <span>{resettingAcctId === acct.id ? 'Sending...' : 'Send Reset Email'}</span>
+                                <span>
+                                  {resettingAcctId === acct.id
+                                    ? 'Sending...'
+                                    : resetSentAcctId === acct.id
+                                    ? 'Reset Link Sent'
+                                    : 'Send Password Reset Email'}
+                                </span>
                               </button>
                               <button
                                 type="button"
@@ -1404,7 +1450,7 @@ export const OwnerControlPanelView: React.FC<OwnerControlPanelViewProps> = ({
                     className="min-h-[42px] px-5 rounded-xl bg-[#0B4F32] hover:bg-[#093F28] text-white text-xs font-bold inline-flex items-center gap-2 disabled:opacity-60"
                   >
                     <Send className="w-3.5 h-3.5" />
-                    <span>{sendingResetEmail ? 'Sending Reset Email...' : 'Send Reset Email'}</span>
+                    <span>{sendingResetEmail ? 'Sending Reset Email...' : 'Send Password Reset Email'}</span>
                   </button>
                 </div>
               </form>
