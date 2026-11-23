@@ -35,9 +35,21 @@
   }
 }
 
-/* Safe area padding for mobile bottom navigation */
+/* Safe area padding for mobile standalone & notched Android devices */
+.pt-safe {
+  padding-top: env(safe-area-inset-top);
+}
+
 .pb-safe {
   padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+}
+
+@media (display-mode: standalone) {
+  html,
+  body {
+    overscroll-behavior-y: contain;
+    -webkit-tap-highlight-color: transparent;
+  }
 }
 
 /* Custom subtle scrollbars */

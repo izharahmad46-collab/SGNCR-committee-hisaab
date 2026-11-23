@@ -38,6 +38,7 @@ import { CommitteeRemindersView } from './components/CommitteeRemindersView';
 import { ReportsAuditSettingsView } from './components/ReportsAuditSettingsView';
 import { AdminControlPanelView } from './components/AdminControlPanelView';
 import { OwnerControlPanelView } from './components/OwnerControlPanelView';
+import { PWAInstallButton, OfflineIndicator } from './components/PWAInstallButton';
 import {
   isAdminRole,
   isOwnerRole,
@@ -510,6 +511,7 @@ export default function App() {
 
         {/* User Role & Quick Controls Footer */}
         <div className="p-3 border-t border-slate-200 dark:border-slate-800 space-y-2.5">
+          <PWAInstallButton lang={lang} variant="sidebar" />
           <div className="px-2">
             <div className="text-xs font-bold text-slate-900 dark:text-slate-100 truncate">{user.fullName}</div>
             <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
@@ -567,7 +569,8 @@ export default function App() {
             </span>
           </div>
 
-          <div className="flex items-center gap-3 shrink-0">
+          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+            <PWAInstallButton lang={lang} variant="header" />
             <span className="hidden sm:inline text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">
               {isOwner
                 ? `Owner / Super Admin · ${user.username}`
@@ -592,6 +595,7 @@ export default function App() {
             </button>
           </div>
         </header>
+        <OfflineIndicator lang={lang} />
 
         {/* Explicit DEMO DATA Banner (Clearly distinguishes demo vs real balances) */}
         {settings?.isDemoDataActive && (

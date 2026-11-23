@@ -40,6 +40,7 @@ const ALLOWED_ROOT_FILES = [
   'bun.lock',
   'eslint.config.js',
   'favicon.ico',
+  'firebase.json',
   'firebase-applet-config.json',
   'firebase-blueprint.json',
   'firestore.rules',
@@ -53,9 +54,14 @@ const ALLOWED_ROOT_FILES = [
   'tsconfig.json',
   'vite.config.ts',
   'public/favicon.ico',
+  'public/apple-touch-icon.png',
+  'public/pwa-192x192.png',
+  'public/pwa-512x512.png',
+  'public/pwa-maskable-512x512.png',
+  'public/pwa-splash-1080x1920.png',
 ];
 
-const ALLOWED_DIRS = ['src', 'server', 'public/assets', 'tests'];
+const ALLOWED_DIRS = ['src', 'server', 'functions', 'android-wrapper', '.github', 'public/assets', 'tests'];
 
 const FORBIDDEN_PATTERNS = [
   /^\.env($|\.(?!example$))/i,

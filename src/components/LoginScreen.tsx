@@ -18,6 +18,7 @@ import { signInWithGoogle } from '../firebase';
 import { ensureFirebaseUserProfile } from '../lib/firestoreSync';
 import type { AuthUser, Language } from '../types';
 import { APP_MAIN_NAME, COMMITTEE_TITLE, COMMITTEE_ADDRESS, COMMITTEE_LOGO_URL, t } from '../i18n/translations';
+import { PWAInstallButton } from './PWAInstallButton';
 
 interface LoginScreenProps {
   lang: Language;
@@ -206,14 +207,17 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
           ))}
         </div>
 
-        <button
-          type="button"
-          onClick={() => setDark(!dark)}
-          aria-label="Toggle color theme"
-          className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121D18] text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
-        >
-          {dark ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
-        </button>
+        <div className="flex items-center gap-2">
+          <PWAInstallButton lang={lang} variant="login" />
+          <button
+            type="button"
+            onClick={() => setDark(!dark)}
+            aria-label="Toggle color theme"
+            className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121D18] text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+          >
+            {dark ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+          </button>
+        </div>
       </div>
 
       {/* Main split container */}

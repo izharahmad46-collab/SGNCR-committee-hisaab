@@ -1,0 +1,128 @@
+name: Build Android APK (S.G.N Committee Hisaab)
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_https_url:
+        description: 'Live Deployed HTTPS Backend URL (e.g. https://your-app.run.app — REQUIRED)'
+        required: true
+        type: string
+      build_type:
+        description: 'APK Build Type (debug = instant installable APK, release = signed APK if keystore secrets are set)'
+        required: true
+        default: 'debug'
+        type: choice
+        options:
+          - debug
+          - release
+
+jobs:
+  build-android-apk:
+    name: Build Installable Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Validate Live HTTPS Backend URL
+        env:
+          INPUT_URL: ${{ inputs.app_https_url }}
+        run: |
+          if [ -z "$INPUT_URL" ]; then
+            echo "::error::app_https_url is required! Provide your live deployed HTTPS URL (e.g. https://your-app.run.app)."
+            exit 1
+          fi
+          if [[ ! "$INPUT_URL" =~ ^https:// ]]; then
+            echo "::error::app_https_url must start with https:// (received: $INPUT_URL)."
+            exit 1
+          fi
+          if [[ "$INPUT_URL" =~ localhost|127\.0\.0\.1|0\.0\.0\.0 ]]; then
+            echo "::error::app_https_url cannot be localhost. Deploy your Node.js/Express backend to HTTPS first."
+            exit 1
+          fi
+          echo "Verified live HTTPS backend URL: $INPUT_URL"
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Java 21 (Android Gradle)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Capacitor Android Wrapper Dependencies
+        working-directory: android-wrapper
+        run: npm install
+
+      - name: Initialize Android Native Project & Generate Icons / Splash Screens
+        working-directory: android-wrapper
+        env:
+          APP_HTTPS_URL: ${{ inputs.app_https_url }}
+        run: |
+          cp resources/icon.png www/icon.png
+          if [ ! -d "android" ]; then
+            npx cap add android
+          fi
+          npx @capacitor/assets generate --android \
+            --iconBackgroundColor '#0B4F32' \
+            --iconBackgroundColorDark '#0B120F' \
+            --splashBackgroundColor '#0B4F32' \
+            --splashBackgroundColorDark '#0B120F'
+          node scripts/configure-android.mjs
+          npx cap sync android
+
+      - name: Build Debug APK (Installable on Android)
+        if: inputs.build_type == 'debug'
+        working-directory: android-wrapper/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+          mkdir -p ../../apk-output
+          cp app/build/outputs/apk/debug/app-debug.apk ../../apk-output/SGN-Committee-Hisaab-debug.apk
+          ls -lh ../../apk-output/
+
+      - name: Build Release APK (Unsigned or Signed via Secrets)
+        if: inputs.build_type == 'release'
+        working-directory: android-wrapper/android
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+          mkdir -p ../../apk-output
+          UNSIGNED_APK="app/build/outputs/apk/release/app-release-unsigned.apk"
+          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$KEYSTORE_PASSWORD" ] && [ -n "$KEY_ALIAS" ] && [ -n "$KEY_PASSWORD" ]; then
+            echo "$KEYSTORE_BASE64" | base64 --decode > release.keystore
+            BUILD_TOOLS_DIR=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n 1)
+            "$BUILD_TOOLS_DIR/zipalign" -v -p 4 "$UNSIGNED_APK" aligned.apk
+            "$BUILD_TOOLS_DIR/apksigner" sign \
+              --ks release.keystore \
+              --ks-pass "pass:$KEYSTORE_PASSWORD" \
+              --ks-key-alias "$KEY_ALIAS" \
+              --key-pass "pass:$KEY_PASSWORD" \
+              --out ../../apk-output/SGN-Committee-Hisaab-release-signed.apk \
+              aligned.apk
+            rm -f release.keystore aligned.apk
+          else
+            echo "::warning::Release keystore secrets not set. Uploading unsigned release APK (use build_type=debug for direct phone install without a keystore)."
+            cp "$UNSIGNED_APK" ../../apk-output/SGN-Committee-Hisaab-release-unsigned.apk
+          fi
+          ls -lh ../../apk-output/
+
+      - name: Upload Downloadable Android APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SGN-Committee-Hisaab-Android-APK
+          path: apk-output/*.apk
+          retention-days: 30
+          if-no-files-found: error

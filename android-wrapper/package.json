@@ -1,0 +1,24 @@
+{
+  "name": "sgn-committee-hisaab-android",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Separate Capacitor Android APK wrapper for S.G.N Committee Hisaab (connects to the real HTTPS Node.js + Express + SQLite + Firebase backend)",
+  "scripts": {
+    "cap:add:android": "npx cap add android",
+    "cap:assets": "npx @capacitor/assets generate --android --iconBackgroundColor '#0B4F32' --iconBackgroundColorDark '#0B120F' --splashBackgroundColor '#0B4F32' --splashBackgroundColorDark '#0B120F'",
+    "cap:configure": "node scripts/configure-android.mjs",
+    "cap:sync": "npx cap sync android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^7.4.3",
+    "@capacitor/app": "^7.1.0",
+    "@capacitor/core": "^7.4.3",
+    "@capacitor/splash-screen": "^7.0.3",
+    "@capacitor/status-bar": "^7.0.3"
+  },
+  "devDependencies": {
+    "@capacitor/assets": "^3.0.5",
+    "@capacitor/cli": "^7.4.3",
+    "typescript": "^5.7.3"
+  }
+}

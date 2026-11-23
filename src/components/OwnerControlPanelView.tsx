@@ -29,7 +29,7 @@ import {
   Send,
 } from 'lucide-react';
 import { apiRequest, downloadAppSourceZip } from '../lib/api';
-import { signInWithGoogle, triggerFirebasePasswordResetEmail } from '../firebase';
+import { signInWithGoogle, invokePasswordResetCloudFunction } from '../firebase';
 import { syncSettingsToFirestore, syncBankUpiToFirestore } from '../lib/firestoreSync';
 import type {
   AdminPermissions,
@@ -171,12 +171,13 @@ export const OwnerControlPanelView: React.FC<OwnerControlPanelViewProps> = ({
   });
   const [confirmDeleteAcctId, setConfirmDeleteAcctId] = useState<string | null>(null);
 
-  // Firebase Password Reset Email Modal
+  // Firebase Password Reset Email (Cloud Function + Modal for accounts without email)
   const [resetEmailAcct, setResetEmailAcct] = useState<OwnerManagedAccount | null>(null);
   const [resetEmailTarget, setResetEmailTarget] = useState('');
   const [resetEmailReason, setResetEmailReason] = useState('');
   const [resetEmailSaveToProfile, setResetEmailSaveToProfile] = useState(true);
   const [sendingResetEmail, setSendingResetEmail] = useState(false);
+  const [resettingAcctId, setResettingAcctId] = useState<string | null>(null);
 
   // Committee Settings & Branding Form
   const [committeeForm, setCommitteeForm] = useState({
@@ -639,45 +640,57 @@ export const OwnerControlPanelView: React.FC<OwnerControlPanelViewProps> = ({
     setResetEmailSaveToProfile(!acct.firebaseEmail && acct.role !== 'owner');
   }
 
-  async function handleSendPasswordResetEmail(e: React.FormEvent) {
-    e.preventDefault();
-    if (!resetEmailAcct) return;
-    const cleanEmail = resetEmailTarget.trim().toLowerCase();
+  async function dispatchPasswordResetForAccount(
+    acct: OwnerManagedAccount,
+    targetEmail: string,
+    options: { reason?: string; saveEmailToAccount?: boolean } = {}
+  ) {
+    const cleanEmail = targetEmail.trim().toLowerCase();
     if (!cleanEmail) {
       onNotify('Please enter the registered Firebase email address for this user.', 'error');
       return;
     }
 
     setSendingResetEmail(true);
+    setResettingAcctId(acct.id);
     try {
       // 1) Server-side Owner verification, email validation & cooldown check
       const prep = await apiRequest<{ ok: boolean; email: string; emailSaved: boolean }>(
-        `/api/owner/accounts/${resetEmailAcct.id}/password-reset-prepare`,
+        `/api/owner/accounts/${acct.id}/password-reset-prepare`,
         {
           method: 'POST',
           body: {
             email: cleanEmail,
-            saveEmailToAccount: resetEmailSaveToProfile && resetEmailAcct.role !== 'owner',
+            saveEmailToAccount: Boolean(options.saveEmailToAccount) && acct.role !== 'owner',
           },
         }
       );
 
-      // 2) Dispatch secure one-time password reset email via Firebase Auth SDK
-      await triggerFirebasePasswordResetEmail(prep.email);
+      const finalReason =
+        options.reason?.trim() ||
+        `Super Admin triggered Firebase password reset email for ${acct.username}`;
 
-      // 3) Record immutable Owner audit entry
-      await apiRequest(`/api/owner/accounts/${resetEmailAcct.id}/password-reset-audit`, {
+      // 2) Invoke Cloud Function `triggerUserPasswordReset` -> Firebase Auth `sendPasswordResetEmail`
+      const dispatched = await invokePasswordResetCloudFunction({
+        email: prep.email,
+        targetUserId: acct.id,
+        targetUsername: acct.username,
+        reason: finalReason,
+      });
+
+      // 3) Record immutable Owner audit entry on server
+      await apiRequest(`/api/owner/accounts/${acct.id}/password-reset-audit`, {
         method: 'POST',
         body: {
-          email: prep.email,
-          reason:
-            resetEmailReason.trim() ||
-            `Super Admin triggered Firebase password reset email for ${resetEmailAcct.username}`,
+          email: dispatched.email,
+          reason: `${finalReason} (${dispatched.dispatchedVia === 'cloud_function' ? 'Cloud Function' : 'Firebase Auth SDK'})`,
         },
       });
 
       onNotify(
-        `Secure Firebase password reset email sent to ${prep.email} for ${resetEmailAcct.fullName} (${resetEmailAcct.username}).`,
+        `Password reset email sent to ${dispatched.email} for ${acct.fullName} (${acct.username}) via ${
+          dispatched.dispatchedVia === 'cloud_function' ? 'Firebase Cloud Function' : 'Firebase Auth SDK'
+        }.`,
         'success'
       );
       setResetEmailAcct(null);
@@ -686,7 +699,27 @@ export const OwnerControlPanelView: React.FC<OwnerControlPanelViewProps> = ({
       onNotify(err?.message || 'Failed to trigger Firebase password reset email.', 'error');
     } finally {
       setSendingResetEmail(false);
+      setResettingAcctId(null);
     }
+  }
+
+  function handleUserResetButtonClick(acct: OwnerManagedAccount) {
+    if (acct.firebaseEmail && acct.firebaseEmail.trim()) {
+      void dispatchPasswordResetForAccount(acct, acct.firebaseEmail, {
+        reason: `Super Admin clicked Send Reset Email for ${acct.username}`,
+      });
+    } else {
+      openResetEmailModal(acct);
+    }
+  }
+
+  async function handleSendPasswordResetEmail(e: React.FormEvent) {
+    e.preventDefault();
+    if (!resetEmailAcct) return;
+    await dispatchPasswordResetForAccount(resetEmailAcct, resetEmailTarget, {
+      reason: resetEmailReason,
+      saveEmailToAccount: resetEmailSaveToProfile,
+    });
   }
 
   const filteredAccounts = (overview?.accounts || []).filter((a) => {
@@ -1160,12 +1193,16 @@ export const OwnerControlPanelView: React.FC<OwnerControlPanelViewProps> = ({
                               <button
                                 type="button"
                                 disabled={busy || sendingResetEmail}
-                                onClick={() => openResetEmailModal(acct)}
-                                className="px-2.5 py-1.5 rounded-lg border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 text-xs font-semibold inline-flex items-center gap-1"
-                                title="Send Firebase Auth Password Reset Email"
+                                onClick={() => handleUserResetButtonClick(acct)}
+                                className="px-2.5 py-1.5 rounded-lg border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 text-xs font-semibold inline-flex items-center gap-1 disabled:opacity-60"
+                                title={
+                                  acct.firebaseEmail
+                                    ? `Trigger Cloud Function password reset email to ${acct.firebaseEmail}`
+                                    : 'Send Firebase Auth Password Reset Email'
+                                }
                               >
-                                <Mail className="w-3.5 h-3.5" />
-                                <span>Reset Email</span>
+                                <Mail className={`w-3.5 h-3.5 ${resettingAcctId === acct.id ? 'animate-pulse' : ''}`} />
+                                <span>{resettingAcctId === acct.id ? 'Sending...' : 'Send Reset Email'}</span>
                               </button>
                               <button
                                 type="button"
@@ -1211,12 +1248,16 @@ export const OwnerControlPanelView: React.FC<OwnerControlPanelViewProps> = ({
                               <button
                                 type="button"
                                 disabled={busy || sendingResetEmail}
-                                onClick={() => openResetEmailModal(acct)}
-                                className="px-2.5 py-1.5 rounded-lg border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 text-xs font-semibold inline-flex items-center gap-1"
-                                title="Send Firebase Auth Password Reset Email"
+                                onClick={() => handleUserResetButtonClick(acct)}
+                                className="px-2.5 py-1.5 rounded-lg border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 text-xs font-semibold inline-flex items-center gap-1 disabled:opacity-60"
+                                title={
+                                  acct.firebaseEmail
+                                    ? `Trigger Cloud Function password reset email to ${acct.firebaseEmail}`
+                                    : 'Enter email & trigger Firebase Auth Password Reset Email'
+                                }
                               >
-                                <Mail className="w-3.5 h-3.5" />
-                                <span>Reset Email</span>
+                                <Mail className={`w-3.5 h-3.5 ${resettingAcctId === acct.id ? 'animate-pulse' : ''}`} />
+                                <span>{resettingAcctId === acct.id ? 'Sending...' : 'Send Reset Email'}</span>
                               </button>
                               <button
                                 type="button"

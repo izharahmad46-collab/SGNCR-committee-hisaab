@@ -3,12 +3,20 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <title>S.G.N Committee Noori Jama Masjid & Madarsa Anwarool Uloom</title>
+    <title>S.G.N Committee Hisaab — Noori Jama Masjid & Madarsa Anwarool Uloom</title>
     <meta
       name="description"
       content="Official Masjid & Madrasa Financial Management System — At Ragdih, PO Chalkusha, District Hazaribagh, Jharkhand – 825109, India."
     />
-    <meta property="og:title" content="S.G.N Committee Noori Jama Masjid & Madarsa Anwarool Uloom" />
+    <meta name="theme-color" content="#0B4F32" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="SGN Hisaab" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/pwa-192x192.png" />
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta property="og:title" content="S.G.N Committee Hisaab — Noori Jama Masjid & Madarsa Anwarool Uloom" />
     <meta
       property="og:description"
       content="Transparent financial accounting, monthly member contributions, salaries, funds, and reports for S.G.N Committee Ragdih."
@@ -23,6 +31,22 @@
     />
   </head>
   <body class="bg-[#F6F8F7] dark:bg-[#0B120F] text-slate-900 dark:text-slate-100 antialiased selection:bg-emerald-700 selection:text-white">
+    <div
+      id="pwa-boot-splash"
+      class="fixed inset-0 z-[9999] flex flex-col items-center justify-center gap-4 bg-[#0B4F32] text-white transition-opacity duration-300"
+    >
+      <div class="w-24 h-24 rounded-full bg-white p-1.5 shadow-xl flex items-center justify-center">
+        <img
+          src="/pwa-192x192.png"
+          alt="S.G.N Committee Hisaab"
+          class="w-full h-full object-contain rounded-full"
+        />
+      </div>
+      <div class="text-center px-6">
+        <div class="text-lg font-bold tracking-tight">S.G.N Committee Hisaab</div>
+        <div class="text-xs text-emerald-100/85 mt-0.5">Noori Jama Masjid &amp; Madarsa Anwarool Uloom</div>
+      </div>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

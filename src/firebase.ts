@@ -8,6 +8,7 @@ import {
   type User as FirebaseUser,
 } from 'firebase/auth';
 import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage';
 import firebaseConfig from '../firebase-applet-config.json';
 
@@ -15,6 +16,7 @@ const app = initializeApp(firebaseConfig);
 
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
+export const functions = getFunctions(app, 'us-central1');
 export const storage = getStorage(app);
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
@@ -150,6 +152,54 @@ export async function triggerFirebasePasswordResetEmail(email: string): Promise<
     }
     throw new Error(err?.message || 'Failed to send Firebase password reset email.');
   }
+}
+
+export async function invokePasswordResetCloudFunction(params: {
+  email: string;
+  targetUserId: string;
+  targetUsername: string;
+  reason?: string;
+}): Promise<{ email: string; dispatchedVia: 'cloud_function' | 'firebase_auth_sdk' }> {
+  const cleanEmail = String(params.email || '').trim().toLowerCase();
+  if (!cleanEmail || cleanEmail.length > 160 || !/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(cleanEmail)) {
+    throw new Error('Please enter a valid registered email address.');
+  }
+
+  // Prefer the deployed Firebase Callable Cloud Function when signed in via Firebase Auth
+  if (auth.currentUser) {
+    try {
+      const triggerResetFn = httpsCallable<
+        { email: string; targetUserId: string; targetUsername: string; reason?: string },
+        { ok: boolean; email: string; dispatchedVia: 'cloud_function' }
+      >(functions, 'triggerUserPasswordReset');
+
+      const result = await triggerResetFn({
+        email: cleanEmail,
+        targetUserId: params.targetUserId,
+        targetUsername: params.targetUsername,
+        reason: params.reason,
+      });
+
+      if (result.data?.ok) {
+        return { email: result.data.email || cleanEmail, dispatchedVia: 'cloud_function' };
+      }
+    } catch (err: any) {
+      const code = String(err?.code || '');
+      // Surface explicit authorization/validation errors directly from the Cloud Function
+      if (
+        code === 'functions/permission-denied' ||
+        code === 'functions/invalid-argument' ||
+        code === 'functions/resource-exhausted'
+      ) {
+        throw new Error(err?.message || 'Cloud Function rejected the password reset request.');
+      }
+      // If the Cloud Function is not yet deployed on this Firebase project (e.g. Starter Tier preview),
+      // seamlessly fall back to calling sendPasswordResetEmail directly via the Firebase Auth SDK.
+    }
+  }
+
+  const fallback = await triggerFirebasePasswordResetEmail(cleanEmail);
+  return { email: fallback.email, dispatchedVia: 'firebase_auth_sdk' };
 }
 
 async function testConnection() {

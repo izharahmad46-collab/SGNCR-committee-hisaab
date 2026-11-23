@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#0B4F32" />
+    <title>S.G.N Committee Hisaab</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        background: #0b4f32;
+        color: #ffffff;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .card {
+        max-width: 340px;
+        width: 90%;
+        text-align: center;
+        padding: 28px 22px;
+        border-radius: 20px;
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid rgba(255, 255, 255, 0.16);
+      }
+      .logo {
+        width: 88px;
+        height: 88px;
+        border-radius: 9999px;
+        background: #ffffff;
+        padding: 6px;
+        margin: 0 auto 16px;
+        object-fit: contain;
+        display: block;
+      }
+      h1 {
+        font-size: 18px;
+        margin: 0 0 6px;
+        font-weight: 700;
+      }
+      p {
+        font-size: 13px;
+        line-height: 1.5;
+        color: rgba(255, 255, 255, 0.88);
+        margin: 0 0 18px;
+      }
+      button {
+        appearance: none;
+        border: none;
+        border-radius: 12px;
+        padding: 12px 20px;
+        width: 100%;
+        background: #f59e0b;
+        color: #0b120f;
+        font-weight: 700;
+        font-size: 14px;
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <img src="icon.png" alt="S.G.N Committee Hisaab" class="logo" />
+      <h1>S.G.N Committee Hisaab</h1>
+      <p>
+        Noori Jama Masjid &amp; Madarsa Anwarool Uloom.<br />
+        इंटरनेट कनेक्शन की जांच करें और पुनः प्रयास करें।
+      </p>
+      <button type="button" onclick="window.location.reload()">पुनः लोड करें / Retry</button>
+    </main>
+  </body>
+</html>
