@@ -103,6 +103,34 @@ function roleLabel(role: UserRole): string {
   }
 }
 
+const CRITICAL_ACTION_PATTERN =
+  /(DELETE|REVERSED|REJECTED|SUSPEND|REVOKED|PASSWORD|ROLE|REOPEN|RESET|LIVE_MODE|DEMO_MODE|RESTORED|BRANDING|REMOVED|FAILED)/i;
+
+function isCriticalAuditAction(action: string): boolean {
+  return CRITICAL_ACTION_PATTERN.test(action || '');
+}
+
+function formatAuditDiffPreview(raw: string | null | undefined): string {
+  if (!raw) return '';
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return Object.entries(parsed)
+        .filter(([k]) => !/password_hash|token|secret/i.test(k))
+        .map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : String(v)}`)
+        .join(' · ');
+    }
+    return String(raw);
+  } catch {
+    return String(raw);
+  }
+}
+
+function csvEscapeCell(val: unknown): string {
+  const s = String(val ?? '').replace(/\r?\n/g, ' ');
+  return `"${s.replace(/"/g, '""')}"`;
+}
+
 async function uploadImageFile(file: File, category: 'logo' | 'qr'): Promise<string> {
   if (!file.type.startsWith('image/')) {
     throw new Error('Please choose a valid PNG, JPG, or WebP image file.');
@@ -252,7 +280,11 @@ export const OwnerControlPanelView: React.FC<OwnerControlPanelViewProps> = ({
   const [showOwnerPass, setShowOwnerPass] = useState(false);
 
   // Activity sub-view
-  const [activityMode, setActivityMode] = useState<'logins' | 'audits'>('logins');
+  const [activityMode, setActivityMode] = useState<'logins' | 'audits'>('audits');
+  const [auditSearch, setAuditSearch] = useState('');
+  const [auditActorFilter, setAuditActorFilter] = useState('all');
+  const [auditCriticalOnly, setAuditCriticalOnly] = useState(false);
+  const [loginStatusFilter, setLoginStatusFilter] = useState<'all' | 'success' | 'failed' | 'logout'>('all');
 
   const fetchOverview = useCallback(async () => {
     setLoading(true);
@@ -767,6 +799,115 @@ export const OwnerControlPanelView: React.FC<OwnerControlPanelViewProps> = ({
     return matchRole && matchQ;
   });
 
+  const allAuditLogs = overview?.ownerAuditLogs || [];
+  const auditActors = Array.from(new Set(allAuditLogs.map((l) => l.adminName).filter(Boolean))).sort();
+  const criticalAuditCount = allAuditLogs.filter((l) => isCriticalAuditAction(l.action)).length;
+  const failedLoginCount = (overview?.loginActivity || []).filter((l) => l.status === 'failed').length;
+
+  const filteredOwnerAuditLogs = allAuditLogs.filter((log) => {
+    if (auditCriticalOnly && !isCriticalAuditAction(log.action)) return false;
+    if (auditActorFilter !== 'all' && log.adminName !== auditActorFilter) return false;
+    const q = auditSearch.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      log.adminName.toLowerCase().includes(q) ||
+      log.action.toLowerCase().includes(q) ||
+      log.entityType.toLowerCase().includes(q) ||
+      log.entityId.toLowerCase().includes(q) ||
+      (log.reason || '').toLowerCase().includes(q) ||
+      (log.beforeData || '').toLowerCase().includes(q) ||
+      (log.afterData || '').toLowerCase().includes(q)
+    );
+  });
+
+  const filteredLoginActivity = (overview?.loginActivity || []).filter((l) => {
+    if (loginStatusFilter !== 'all' && l.status !== loginStatusFilter) return false;
+    const q = auditSearch.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      l.username.toLowerCase().includes(q) ||
+      l.fullName.toLowerCase().includes(q) ||
+      l.role.toLowerCase().includes(q) ||
+      l.ip.toLowerCase().includes(q)
+    );
+  });
+
+  function openCreateNewAdminFlow() {
+    setNewAcct({
+      username: '',
+      fullName: '',
+      password: '',
+      role: 'committee_admin',
+      phone: '',
+      firebaseEmail: '',
+      accountStatus: 'active',
+      createMemberProfile: false,
+      village: 'Ragdih, Chalkusha',
+      monthlyAmount: settings?.defaultMonthlyContribution || 500,
+      permissions: { ...DEFAULT_PERMS },
+    });
+    setSubTab('accounts');
+    setShowCreateAcct(true);
+  }
+
+  function handleExportActivityReportCSV() {
+    const today = new Date().toISOString().slice(0, 10);
+    if (activityMode === 'logins') {
+      const headers = ['Timestamp', 'User Full Name', 'Login ID', 'Role', 'Status', 'IP Address', 'Device / User Agent'];
+      const rows = filteredLoginActivity.map((l) => [
+        new Date(l.timestamp).toLocaleString(),
+        l.fullName,
+        l.username,
+        roleLabel(l.role as UserRole),
+        l.status,
+        l.ip,
+        l.userAgent,
+      ]);
+      const csv = '\uFEFF' + [headers, ...rows].map((r) => r.map(csvEscapeCell).join(',')).join('\n');
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `SGN-Login-Activity-Report-${today}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+      onNotify(`Downloaded Login Activity Report (${filteredLoginActivity.length} records).`, 'success');
+      return;
+    }
+
+    const headers = [
+      'Timestamp',
+      'Actor (Admin / Owner)',
+      'Action',
+      'Severity',
+      'Entity Type',
+      'Entity ID',
+      'Old Data (Before)',
+      'New Data (After)',
+      'Reason / Details',
+    ];
+    const rows = filteredOwnerAuditLogs.map((log) => [
+      new Date(log.timestamp).toLocaleString(),
+      log.adminName,
+      log.action,
+      isCriticalAuditAction(log.action) ? 'CRITICAL / SENSITIVE' : 'STANDARD',
+      log.entityType,
+      log.entityId,
+      formatAuditDiffPreview(log.beforeData),
+      formatAuditDiffPreview(log.afterData),
+      log.reason || '',
+    ]);
+    const csv = '\uFEFF' + [headers, ...rows].map((r) => r.map(csvEscapeCell).join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `SGN-Full-Activity-Audit-Report-${today}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    onNotify(`Downloaded Full Activity Audit Report (${filteredOwnerAuditLogs.length} records).`, 'success');
+  }
+
   const tabs: Array<{ key: OwnerSubTab; label: string; icon: React.ComponentType<{ className?: string }> }> = [
     { key: 'overview', label: 'Overview', icon: Crown },
     { key: 'accounts', label: 'Accounts & Roles', icon: Users },
@@ -794,6 +935,15 @@ export const OwnerControlPanelView: React.FC<OwnerControlPanelViewProps> = ({
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2.5">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={openCreateNewAdminFlow}
+            className="min-h-[42px] px-4 rounded-xl bg-white text-[#0B4F32] hover:bg-emerald-50 text-xs font-extrabold uppercase tracking-wide inline-flex items-center gap-2 shadow-xs transition-colors"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Create New Admin</span>
+          </button>
           <button
             type="button"
             disabled={busy}
@@ -992,14 +1142,27 @@ export const OwnerControlPanelView: React.FC<OwnerControlPanelViewProps> = ({
                 <option value="member">Member</option>
               </select>
             </div>
-            <button
-              type="button"
-              onClick={() => setShowCreateAcct(!showCreateAcct)}
-              className="min-h-[42px] px-4 rounded-xl bg-[#0B4F32] hover:bg-[#093F28] text-white text-xs sm:text-sm font-semibold inline-flex items-center justify-center gap-2"
-            >
-              <Plus className="w-4 h-4" />
-              <span>Create New Account</span>
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={openCreateNewAdminFlow}
+                className="min-h-[42px] px-4 rounded-xl bg-[#0B4F32] hover:bg-[#093F28] text-white text-xs sm:text-sm font-bold uppercase tracking-wide inline-flex items-center justify-center gap-2"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Create New Admin</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setNewAcct((prev) => ({ ...prev, role: 'member', createMemberProfile: true }));
+                  setShowCreateAcct(true);
+                }}
+                className="min-h-[42px] px-3.5 rounded-xl border border-slate-300 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs sm:text-sm font-semibold inline-flex items-center justify-center gap-1.5"
+              >
+                <Users className="w-4 h-4" />
+                <span>Add Member</span>
+              </button>
+            </div>
           </div>
 
           {showCreateAcct && (
@@ -1008,22 +1171,31 @@ export const OwnerControlPanelView: React.FC<OwnerControlPanelViewProps> = ({
               className="rounded-2xl bg-white dark:bg-[#121D18] border-2 border-[#0B4F32]/40 p-5 space-y-4"
             >
               <div className="flex items-center justify-between">
-                <h3 className="text-base font-bold text-slate-900 dark:text-slate-100">
-                  Create New Admin / Committee Admin / Member Account
-                </h3>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900 dark:text-slate-100">
+                    {newAcct.role === 'member'
+                      ? 'Create New Member Account (Read-Only)'
+                      : 'Create New Admin Account (Owner Exclusive)'}
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    Only the App Owner can create new Admins. Passwords are securely bcrypt-hashed on the server and never stored in plain text.
+                  </p>
+                </div>
                 <button type="button" onClick={() => setShowCreateAcct(false)} className="text-slate-400 hover:text-slate-600">
                   <X className="w-5 h-5" />
                 </button>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
                 <div>
-                  <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Login ID *</label>
+                  <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">
+                    {newAcct.role === 'member' ? 'Member Login ID *' : 'Admin Email / Login ID *'}
+                  </label>
                   <input
                     type="text"
                     required
                     value={newAcct.username}
                     onChange={(e) => setNewAcct({ ...newAcct, username: e.target.value })}
-                    placeholder="e.g. CADMIN-01 or M025"
+                    placeholder={newAcct.role === 'member' ? 'e.g. M025' : 'e.g. admin@domain.com or CADMIN-01'}
                     className="w-full min-h-[42px] px-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm font-data"
                   />
                 </div>
@@ -1154,7 +1326,11 @@ export const OwnerControlPanelView: React.FC<OwnerControlPanelViewProps> = ({
                   disabled={busy}
                   className="min-h-[42px] px-5 rounded-xl bg-[#0B4F32] hover:bg-[#093F28] text-white text-xs font-bold"
                 >
-                  {busy ? 'Creating...' : 'Create Account'}
+                  {busy
+                    ? 'Creating...'
+                    : newAcct.role === 'member'
+                    ? 'Create Member Account'
+                    : 'Create Admin'}
                 </button>
               </div>
             </form>
@@ -2410,29 +2586,117 @@ export const OwnerControlPanelView: React.FC<OwnerControlPanelViewProps> = ({
       {/* TAB 6: ACTIVITY & AUDIT LOGS */}
       {subTab === 'activity' && (
         <div className="space-y-4">
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setActivityMode('logins')}
-              className={`min-h-[40px] px-4 rounded-xl text-xs font-bold ${
-                activityMode === 'logins'
-                  ? 'bg-[#0B4F32] text-white'
-                  : 'bg-white dark:bg-[#121D18] border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300'
-              }`}
-            >
-              All Login Activity ({overview?.loginActivity.length || 0})
-            </button>
-            <button
-              type="button"
-              onClick={() => setActivityMode('audits')}
-              className={`min-h-[40px] px-4 rounded-xl text-xs font-bold ${
-                activityMode === 'audits'
-                  ? 'bg-[#0B4F32] text-white'
-                  : 'bg-white dark:bg-[#121D18] border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300'
-              }`}
-            >
-              Immutable Audit Trail ({overview?.ownerAuditLogs.length || 0})
-            </button>
+          {/* Immutable Audit Trail Summary & Controls */}
+          <div className="rounded-2xl bg-white dark:bg-[#121D18] border border-slate-200 dark:border-slate-800 p-4 space-y-3">
+            <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setActivityMode('audits')}
+                  className={`min-h-[40px] px-4 rounded-xl text-xs font-bold ${
+                    activityMode === 'audits'
+                      ? 'bg-[#0B4F32] text-white'
+                      : 'bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300'
+                  }`}
+                >
+                  Full Change History ({allAuditLogs.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActivityMode('logins')}
+                  className={`min-h-[40px] px-4 rounded-xl text-xs font-bold ${
+                    activityMode === 'logins'
+                      ? 'bg-[#0B4F32] text-white'
+                      : 'bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300'
+                  }`}
+                >
+                  Login Records ({overview?.loginActivity.length || 0})
+                  {failedLoginCount > 0 && (
+                    <span className="ml-1.5 px-1.5 py-0.5 rounded bg-rose-600 text-white text-[10px]">
+                      {failedLoginCount} failed
+                    </span>
+                  )}
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleExportActivityReportCSV}
+                className="min-h-[40px] px-4 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-bold inline-flex items-center justify-center gap-2 transition-colors"
+              >
+                <Download className="w-4 h-4" />
+                <span>
+                  {activityMode === 'audits'
+                    ? 'Export Activity Audit Report (CSV)'
+                    : 'Export Login Report (CSV)'}
+                </span>
+              </button>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2.5 pt-2 border-t border-slate-100 dark:border-slate-800">
+              <div className="relative flex-1 min-w-[200px]">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={auditSearch}
+                  onChange={(e) => setAuditSearch(e.target.value)}
+                  placeholder={
+                    activityMode === 'audits'
+                      ? 'Search by Admin name, action, entity, old/new value, or reason...'
+                      : 'Search login records by user, ID, role, or IP...'
+                  }
+                  className="w-full min-h-[38px] pl-9 pr-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs"
+                />
+              </div>
+
+              {activityMode === 'audits' ? (
+                <>
+                  <select
+                    value={auditActorFilter}
+                    onChange={(e) => setAuditActorFilter(e.target.value)}
+                    className="min-h-[38px] px-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs"
+                  >
+                    <option value="all">All Admins & Actors</option>
+                    {auditActors.map((actor) => (
+                      <option key={actor} value={actor}>
+                        {actor}
+                      </option>
+                    ))}
+                  </select>
+
+                  <button
+                    type="button"
+                    onClick={() => setAuditCriticalOnly(!auditCriticalOnly)}
+                    className={`min-h-[38px] px-3.5 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 border transition-colors ${
+                      auditCriticalOnly
+                        ? 'bg-rose-600 text-white border-rose-600'
+                        : 'border-rose-300 dark:border-rose-800 text-rose-700 dark:text-rose-300 hover:bg-rose-50 dark:hover:bg-rose-950/30'
+                    }`}
+                  >
+                    <AlertTriangle className="w-3.5 h-3.5" />
+                    <span>Suspicious / Critical Changes ({criticalAuditCount})</span>
+                  </button>
+                </>
+              ) : (
+                <select
+                  value={loginStatusFilter}
+                  onChange={(e) => setLoginStatusFilter(e.target.value as 'all' | 'success' | 'failed' | 'logout')}
+                  className="min-h-[38px] px-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs"
+                >
+                  <option value="all">All Login Statuses</option>
+                  <option value="success">Successful Logins</option>
+                  <option value="failed">Failed Attempts ({failedLoginCount})</option>
+                  <option value="logout">Logouts</option>
+                </select>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400">
+              <Lock className="w-3.5 h-3.5 text-[#0B4F32] dark:text-emerald-400 shrink-0" />
+              <span>
+                Immutable Audit Log: Protected by SQLite triggers and Firestore rules. No Admin or Member can edit or delete any activity record.
+              </span>
+            </div>
           </div>
 
           {activityMode === 'logins' ? (
@@ -2449,8 +2713,8 @@ export const OwnerControlPanelView: React.FC<OwnerControlPanelViewProps> = ({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                    {(overview?.loginActivity || []).map((l) => (
-                      <tr key={l.id}>
+                    {filteredLoginActivity.map((l) => (
+                      <tr key={l.id} className={l.status === 'failed' ? 'bg-rose-50/40 dark:bg-rose-950/15' : ''}>
                         <td className="py-2.5 px-4 font-data whitespace-nowrap">{new Date(l.timestamp).toLocaleString()}</td>
                         <td className="py-2.5 px-4">
                           <div className="font-semibold text-slate-900 dark:text-slate-100">{l.fullName}</div>
@@ -2475,6 +2739,13 @@ export const OwnerControlPanelView: React.FC<OwnerControlPanelViewProps> = ({
                         </td>
                       </tr>
                     ))}
+                    {filteredLoginActivity.length === 0 && (
+                      <tr>
+                        <td colSpan={5} className="py-8 text-center text-slate-500">
+                          No login records match the current filter.
+                        </td>
+                      </tr>
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -2486,24 +2757,78 @@ export const OwnerControlPanelView: React.FC<OwnerControlPanelViewProps> = ({
                   <thead>
                     <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50 text-[11px] uppercase text-slate-500">
                       <th className="py-3 px-4">Timestamp</th>
-                      <th className="py-3 px-4">Actor</th>
-                      <th className="py-3 px-4">Action</th>
-                      <th className="py-3 px-4">Entity</th>
-                      <th className="py-3 px-4">Reason / Details</th>
+                      <th className="py-3 px-4">Admin / Actor</th>
+                      <th className="py-3 px-4">Action & Target</th>
+                      <th className="py-3 px-4">Old Info → New Info (Before / After)</th>
+                      <th className="py-3 px-4">Reason / Accountability</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                    {(overview?.ownerAuditLogs || []).map((log) => (
-                      <tr key={log.id}>
-                        <td className="py-2.5 px-4 font-data whitespace-nowrap">{new Date(log.timestamp).toLocaleString()}</td>
-                        <td className="py-2.5 px-4 font-semibold text-slate-900 dark:text-slate-100">{log.adminName}</td>
-                        <td className="py-2.5 px-4 font-data text-[#0B4F32] dark:text-emerald-400 font-semibold">{log.action}</td>
-                        <td className="py-2.5 px-4 font-data text-slate-500">
-                          {log.entityType} / {log.entityId}
+                    {filteredOwnerAuditLogs.map((log) => {
+                      const critical = isCriticalAuditAction(log.action);
+                      const beforeStr = formatAuditDiffPreview(log.beforeData);
+                      const afterStr = formatAuditDiffPreview(log.afterData);
+                      return (
+                        <tr
+                          key={log.id}
+                          className={critical ? 'bg-amber-50/40 dark:bg-amber-950/10 align-top' : 'align-top'}
+                        >
+                          <td className="py-3 px-4 font-data whitespace-nowrap text-[11px]">
+                            {new Date(log.timestamp).toLocaleString()}
+                          </td>
+                          <td className="py-3 px-4">
+                            <div className="font-semibold text-slate-900 dark:text-slate-100">{log.adminName}</div>
+                            <div className="font-data text-[10px] text-slate-500">{log.adminId}</div>
+                          </td>
+                          <td className="py-3 px-4">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span
+                                className={`font-data font-bold ${
+                                  critical
+                                    ? 'text-rose-700 dark:text-rose-400'
+                                    : 'text-[#0B4F32] dark:text-emerald-400'
+                                }`}
+                              >
+                                {log.action}
+                              </span>
+                              {critical && (
+                                <span className="px-1.5 py-0.5 rounded bg-rose-100 dark:bg-rose-950/70 text-rose-700 dark:text-rose-300 text-[9px] font-extrabold uppercase">
+                                  Review
+                                </span>
+                              )}
+                            </div>
+                            <div className="font-data text-[11px] text-slate-500 mt-0.5">
+                              {log.entityType} / {log.entityId}
+                            </div>
+                          </td>
+                          <td className="py-3 px-4 max-w-md space-y-1.5">
+                            {beforeStr && (
+                              <div className="p-2 rounded-lg bg-slate-100/80 dark:bg-slate-900/70 font-data text-[10.5px] text-slate-600 dark:text-slate-300 break-words">
+                                <span className="font-bold text-slate-800 dark:text-slate-200">OLD: </span>
+                                {beforeStr.slice(0, 260)}
+                              </div>
+                            )}
+                            {afterStr && (
+                              <div className="p-2 rounded-lg bg-emerald-50/70 dark:bg-emerald-950/25 font-data text-[10.5px] text-slate-700 dark:text-emerald-200 break-words">
+                                <span className="font-bold text-[#0B4F32] dark:text-emerald-400">NEW: </span>
+                                {afterStr.slice(0, 260)}
+                              </div>
+                            )}
+                            {!beforeStr && !afterStr && <span className="text-slate-400">—</span>}
+                          </td>
+                          <td className="py-3 px-4 text-slate-600 dark:text-slate-300 max-w-xs">
+                            {log.reason || '—'}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {filteredOwnerAuditLogs.length === 0 && (
+                      <tr>
+                        <td colSpan={5} className="py-8 text-center text-slate-500">
+                          No audit activity records match your current filter.
                         </td>
-                        <td className="py-2.5 px-4 text-slate-600 dark:text-slate-300">{log.reason}</td>
                       </tr>
-                    ))}
+                    )}
                   </tbody>
                 </table>
               </div>

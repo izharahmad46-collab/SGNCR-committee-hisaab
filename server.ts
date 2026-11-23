@@ -128,33 +128,43 @@ function serializeUserRow(row: any): Omit<SessionUser, 'token'> {
 }
 
 function ensurePrimaryOwnerRow(displayName?: string): any {
+  const envInitialPassword = String(process.env.OWNER_INITIAL_PASSWORD || '').trim();
   const existing = db.prepare(`SELECT * FROM users WHERE role = 'owner' LIMIT 1`).get() as any;
   if (existing) {
     if (!existing.firebase_email) {
       db.prepare(`UPDATE users SET firebase_email = ? WHERE id = ?`).run(PRIMARY_OWNER_EMAIL, existing.id);
-      return db.prepare(`SELECT * FROM users WHERE id = ?`).get(existing.id);
     }
-    return existing;
+    if ((!existing.credentials_claimed || !existing.password_hash) && envInitialPassword.length >= 8) {
+      const hash = bcrypt.hashSync(envInitialPassword, 10);
+      db.prepare(
+        `UPDATE users SET password_hash = ?, credentials_claimed = 1, is_active = 1, account_status = 'active' WHERE id = ?`
+      ).run(hash, existing.id);
+    }
+    return db.prepare(`SELECT * FROM users WHERE id = ?`).get(existing.id);
   }
   const now = new Date().toISOString();
   const safeName = String(displayName || 'App Owner / Super Admin').trim().slice(0, 100) || 'App Owner / Super Admin';
-  let ownerUsername = 'OWNER-01';
+  let ownerUsername = PRIMARY_OWNER_EMAIL;
   const conflict = db.prepare(`SELECT id FROM users WHERE LOWER(username) = LOWER(?)`).get(ownerUsername);
   if (conflict) {
     ownerUsername = `OWNER-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
   }
+  const hasEnvPass = envInitialPassword.length >= 8;
+  const initialHash = hasEnvPass ? bcrypt.hashSync(envInitialPassword, 10) : '';
   db.prepare(
     `INSERT INTO users (
        id, username, password_hash, full_name, role, member_id, phone,
        two_factor_enabled, two_factor_secret, is_active, account_status,
        firebase_email, permissions_json, owner_pin_hash, credentials_claimed, created_at
-     ) VALUES (?, ?, '', ?, 'owner', NULL, '', 0, '123456', 1, 'active', ?, ?, '', 0, ?)`
+     ) VALUES (?, ?, ?, ?, 'owner', NULL, '', 0, '123456', 1, 'active', ?, ?, '', ?, ?)`
   ).run(
     'usr_owner_primary',
     ownerUsername,
+    initialHash,
     safeName,
     PRIMARY_OWNER_EMAIL,
     JSON.stringify(DEFAULT_ADMIN_PERMISSIONS),
+    hasEnvPass ? 1 : 0,
     now
   );
   return db.prepare(`SELECT * FROM users WHERE id = 'usr_owner_primary'`).get();
@@ -350,8 +360,14 @@ app.post('/api/auth/login', (req, res) => {
       : rawId;
 
   const user = db
-    .prepare(`SELECT * FROM users WHERE LOWER(username) = LOWER(?)`)
-    .get(normalizedId) as any;
+    .prepare(
+      `SELECT * FROM users
+       WHERE LOWER(username) = LOWER(?)
+          OR (firebase_email != '' AND LOWER(firebase_email) = LOWER(?))
+       ORDER BY CASE WHEN LOWER(username) = LOWER(?) THEN 0 ELSE 1 END
+       LIMIT 1`
+    )
+    .get(normalizedId, normalizedId, normalizedId) as any;
 
   const ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1');
   const ua = String(req.headers['user-agent'] || 'Unknown Device').slice(0, 180);
@@ -639,13 +655,31 @@ app.post('/api/auth/change-password', requireAuth, (req, res) => {
     res.status(400).json({ error: 'Current password and a new password (min 6 characters) are required.' });
     return;
   }
+  if (isOwnerRole(req.user!.role) && String(newPassword).length < 8) {
+    res.status(400).json({ error: 'Owner password must be at least 8 characters long.' });
+    return;
+  }
   const userRow = db.prepare(`SELECT * FROM users WHERE id = ?`).get(req.user!.id) as any;
-  if (!userRow || !bcrypt.compareSync(String(currentPassword), userRow.password_hash)) {
+  if (!userRow || !userRow.password_hash || !bcrypt.compareSync(String(currentPassword), userRow.password_hash)) {
     res.status(401).json({ error: 'Current password is incorrect.' });
     return;
   }
   const newHash = bcrypt.hashSync(String(newPassword), 10);
-  db.prepare(`UPDATE users SET password_hash = ? WHERE id = ?`).run(newHash, req.user!.id);
+  db.prepare(`UPDATE users SET password_hash = ?, credentials_claimed = 1 WHERE id = ?`).run(newHash, req.user!.id);
+  // Revoke other active sessions while keeping the current session signed in
+  db.prepare(`DELETE FROM sessions WHERE user_id = ? AND token != ?`).run(req.user!.id, req.user!.token);
+
+  addAuditLog({
+    adminId: req.user!.id,
+    adminName: req.user!.fullName,
+    action: 'USER_PASSWORD_CHANGED',
+    entityType: 'users',
+    entityId: req.user!.id,
+    beforeData: { username: req.user!.username, role: req.user!.role },
+    afterData: { username: req.user!.username, role: req.user!.role, passwordChangedBySelf: true },
+    reason: `${req.user!.fullName} (${req.user!.role}) updated their own login password`,
+  });
+
   res.json({ ok: true });
 });
 
@@ -1084,10 +1118,10 @@ app.get('/api/admin/roles', requireAuth, requireAdmin, (_req, res) => {
   });
 });
 
-app.post('/api/admin/roles/promote', requireAuth, requireAdmin, (req, res) => {
-  if (!isPrimaryAdminOrOwner(req.user!.role)) {
+app.post('/api/admin/roles/promote', requireAuth, requireOwner, (req, res) => {
+  if (!isOwnerRole(req.user!.role)) {
     res.status(403).json({
-      error: 'Only the App Owner or Primary Administrator is authorized to appoint a Secondary Administrator.',
+      error: 'Forbidden: Only the App Owner / Super Admin is authorized to create or promote Administrators.',
     });
     return;
   }
@@ -1150,10 +1184,10 @@ app.post('/api/admin/roles/promote', requireAuth, requireAdmin, (req, res) => {
   res.json({ ok: true, userId: targetUser.id, username: targetUser.username, role: 'admin_secondary' });
 });
 
-app.post('/api/admin/roles/revoke', requireAuth, requireAdmin, (req, res) => {
-  if (!isPrimaryAdminOrOwner(req.user!.role)) {
+app.post('/api/admin/roles/revoke', requireAuth, requireOwner, (req, res) => {
+  if (!isOwnerRole(req.user!.role)) {
     res.status(403).json({
-      error: 'Only the App Owner or Primary Administrator can revoke Secondary Administrator privileges.',
+      error: 'Forbidden: Only the App Owner / Super Admin can revoke or remove Administrator privileges.',
     });
     return;
   }
@@ -1307,25 +1341,40 @@ app.put('/api/members/:id', requireAuth, requireAdmin, (req, res) => {
   const nextJoin = joiningDate || existing.joining_date;
   const nextStatus = status === 'inactive' ? 'inactive' : 'active';
 
+  const linkedUserForMember = db.prepare(`SELECT id, role FROM users WHERE member_id = ?`).get(id) as any;
+  const isLinkedProtectedRole = Boolean(linkedUserForMember && linkedUserForMember.role !== 'member');
+
+  if (resetPassword && String(resetPassword).length >= 6) {
+    if (isLinkedProtectedRole && !isOwnerRole(req.user!.role)) {
+      res.status(403).json({
+        error: 'Forbidden: Admins can only reset passwords for Member accounts. Only the App Owner can reset Admin or Owner passwords.',
+      });
+      return;
+    }
+  }
+
   db.prepare(
     `UPDATE members SET full_name = ?, phone = ?, village = ?, monthly_amount = ?, joining_date = ?, status = ? WHERE id = ?`
   ).run(nextName, nextPhone, nextVillage, nextAmt, nextJoin, nextStatus, id);
 
-  db.prepare(`UPDATE users SET full_name = ?, phone = ?, is_active = ? WHERE member_id = ?`).run(
-    nextName,
-    nextPhone,
-    nextStatus === 'active' ? 1 : 0,
-    id
-  );
+  if (!isLinkedProtectedRole) {
+    db.prepare(`UPDATE users SET full_name = ?, phone = ?, is_active = ?, account_status = ? WHERE member_id = ? AND role = 'member'`).run(
+      nextName,
+      nextPhone,
+      nextStatus === 'active' ? 1 : 0,
+      nextStatus === 'active' ? 'active' : 'inactive',
+      id
+    );
 
-  if (nextStatus === 'inactive') {
-    db.prepare(`DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE member_id = ?)`).run(id);
+    if (nextStatus === 'inactive') {
+      db.prepare(`DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE member_id = ? AND role = 'member')`).run(id);
+    }
   }
 
   if (resetPassword && String(resetPassword).length >= 6) {
-    const newHash = bcrypt.hashSync(String(resetPassword), 8);
-    db.prepare(`UPDATE users SET password_hash = ? WHERE member_id = ?`).run(newHash, id);
-    db.prepare(`DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE member_id = ?)`).run(id);
+    const newHash = bcrypt.hashSync(String(resetPassword), 10);
+    db.prepare(`UPDATE users SET password_hash = ? WHERE member_id = ? AND role = 'member'`).run(newHash, id);
+    db.prepare(`DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE member_id = ? AND role = 'member')`).run(id);
   }
 
   // Update future/unpaid current-month expected amount if monthly_amount changed
@@ -1371,8 +1420,10 @@ app.post('/api/admin/members/:id/access', requireAuth, requirePermission('canMan
   }
 
   const linkedUser = db.prepare(`SELECT * FROM users WHERE member_id = ?`).get(id) as any;
-  if (linkedUser && (linkedUser.role === 'owner' || linkedUser.role === 'admin_main')) {
-    res.status(403).json({ error: 'Cannot disable or modify login access for the App Owner or Primary Administrator.' });
+  if (linkedUser && linkedUser.role !== 'member') {
+    res.status(403).json({
+      error: 'Forbidden: Admins can only manage login access or reset passwords for Member accounts. Only the App Owner can manage Administrator or Owner accounts.',
+    });
     return;
   }
 
@@ -3498,11 +3549,11 @@ app.get('/api/owner/overview', requireAuth, requireOwner, (_req, res) => {
   });
 
   const loginActivity = db
-    .prepare(`SELECT * FROM login_activity ORDER BY timestamp DESC LIMIT 100`)
+    .prepare(`SELECT * FROM login_activity ORDER BY timestamp DESC LIMIT 300`)
     .all() as Array<any>;
 
   const ownerAuditLogs = db
-    .prepare(`SELECT * FROM audit_logs ORDER BY timestamp DESC LIMIT 100`)
+    .prepare(`SELECT * FROM audit_logs ORDER BY timestamp DESC LIMIT 300`)
     .all() as Array<any>;
 
   res.json({
@@ -3729,8 +3780,8 @@ app.post('/api/owner/accounts', requireAuth, requireOwner, (req, res) => {
     const existingCode = db.prepare(`SELECT id FROM members WHERE LOWER(member_code) = LOWER(?)`).get(cleanUsername);
     const memberCode = existingCode ? `M-${crypto.randomBytes(3).toString('hex').toUpperCase()}` : cleanUsername.toUpperCase();
     db.prepare(
-      `INSERT INTO members (id, member_code, full_name, phone, village, monthly_amount, joining_date, status, is_demo, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`
+      `INSERT INTO members (id, member_code, full_name, phone, village, monthly_amount, joining_date, status, is_demo)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`
     ).run(
       memberId,
       memberCode,
@@ -3739,8 +3790,7 @@ app.post('/api/owner/accounts', requireAuth, requireOwner, (req, res) => {
       String(village || 'Ragdih, Chalkusha').trim().slice(0, 160),
       Math.max(10, Number(monthlyAmount || getAppSettings().defaultMonthlyContribution || 500)),
       getTodayISO(),
-      isActive ? 'active' : 'inactive',
-      now
+      isActive ? 'active' : 'inactive'
     );
     linkedMemberId = memberId;
     syncContributionsDuesForAllMembers(getCurrentMonthKey());

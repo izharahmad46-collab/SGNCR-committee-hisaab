@@ -14,7 +14,7 @@ import {
   CheckCircle2,
 } from 'lucide-react';
 import { apiRequest, setAuthToken } from '../lib/api';
-import { signInWithGoogle } from '../firebase';
+import { signInWithGoogle, triggerFirebasePasswordResetEmail } from '../firebase';
 import { ensureFirebaseUserProfile } from '../lib/firestoreSync';
 import type { AuthUser, Language } from '../types';
 import { APP_MAIN_NAME, COMMITTEE_TITLE, COMMITTEE_ADDRESS, COMMITTEE_LOGO_URL, t } from '../i18n/translations';
@@ -61,11 +61,16 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
 
   // Owner First-Time Setup / Firebase-Verified Password Reset panel
   const [showOwnerSetup, setShowOwnerSetup] = useState(false);
-  const [setupUsername, setSetupUsername] = useState('OWNER-01');
+  const [setupUsername, setSetupUsername] = useState('izharahmad46@gmail.com');
   const [setupFullName, setSetupFullName] = useState('');
   const [setupPassword, setSetupPassword] = useState('');
   const [setupConfirmPassword, setSetupConfirmPassword] = useState('');
   const [setupPin, setSetupPin] = useState('');
+
+  // Forgot Password (Firebase Auth Email Reset) for Admin & Member
+  const [showForgotEmail, setShowForgotEmail] = useState(false);
+  const [forgotEmail, setForgotEmail] = useState('');
+  const [sendingReset, setSendingReset] = useState(false);
 
   const effectiveAppMainName = appMainName || APP_MAIN_NAME;
   const effectiveCommitteeTitle = committeeName || COMMITTEE_TITLE;
@@ -183,6 +188,25 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
       }
     } finally {
       setGoogleLoading(false);
+    }
+  }
+
+  async function handleForgotPasswordEmail(e: React.FormEvent) {
+    e.preventDefault();
+    setError('');
+    setInfoMsg('');
+    setSendingReset(true);
+    try {
+      const res = await triggerFirebasePasswordResetEmail(forgotEmail);
+      setInfoMsg(
+        `A secure Firebase password reset link has been sent to ${res.email}. Please check your inbox/spam folder. If your account uses a local Committee ID password, contact the App Owner or Committee Admin to reset it.`
+      );
+      setShowForgotEmail(false);
+      setForgotEmail('');
+    } catch (err: any) {
+      setError(err?.message || 'Unable to send password reset email.');
+    } finally {
+      setSendingReset(false);
     }
   }
 
@@ -310,7 +334,8 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                   setLoginType('owner');
                   setRequiresTwoFactor(false);
                   setShowOwnerSetup(false);
-                  setUsername(ownerCredentialsClaimed ? '' : 'OWNER-01');
+                  setShowForgotEmail(false);
+                  setUsername('');
                   setPassword('');
                   setError('');
                   setInfoMsg('');
@@ -484,10 +509,10 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                       onChange={(e) => setUsername(e.target.value)}
                       placeholder={
                         loginType === 'owner'
-                          ? 'Your custom Owner Login ID'
+                          ? 'izharahmad46@gmail.com or OWNER-01'
                           : loginType === 'admin'
-                          ? 'ADMIN-01, ADMIN-02, or Committee Admin ID'
-                          : 'e.g. M001'
+                          ? 'Admin Email or Login ID (e.g. ADMIN-01)'
+                          : 'Member ID or Email (e.g. M001)'
                       }
                       required
                       className="w-full min-h-[44px] px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 text-sm font-data focus:outline-none focus:ring-2 focus:ring-[#0B4F32]"
@@ -545,7 +570,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                   </button>
                 </form>
 
-                {loginType === 'owner' && (
+                {loginType === 'owner' ? (
                   <div className="mt-3 text-center">
                     <button
                       type="button"
@@ -559,6 +584,49 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                         ? 'Forgot Owner Password? Reset via Firebase Google Verification'
                         : 'First time? Setup Custom Owner Login ID & Password'}
                     </button>
+                  </div>
+                ) : (
+                  <div className="mt-3 space-y-2.5">
+                    <div className="text-center">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowForgotEmail(!showForgotEmail);
+                          setError('');
+                          setInfoMsg('');
+                        }}
+                        className="text-xs font-semibold text-[#0B4F32] dark:text-emerald-400 hover:underline"
+                      >
+                        {showForgotEmail ? 'Hide Forgot Password' : 'Forgot Password? Send Reset Email (Firebase Auth)'}
+                      </button>
+                    </div>
+                    {showForgotEmail && (
+                      <form
+                        onSubmit={handleForgotPasswordEmail}
+                        className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-900/70 border border-slate-200 dark:border-slate-800 space-y-2.5"
+                      >
+                        <p className="text-[11px] text-slate-600 dark:text-slate-400">
+                          Enter your registered Firebase email to receive a secure password reset link, or ask the App Owner / Committee Admin to reset your Login ID password.
+                        </p>
+                        <div className="flex gap-2">
+                          <input
+                            type="email"
+                            required
+                            value={forgotEmail}
+                            onChange={(e) => setForgotEmail(e.target.value)}
+                            placeholder="registered-email@gmail.com"
+                            className="flex-1 min-h-[38px] px-3 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs"
+                          />
+                          <button
+                            type="submit"
+                            disabled={sendingReset}
+                            className="min-h-[38px] px-3.5 rounded-lg bg-[#0B4F32] hover:bg-[#093F28] text-white text-xs font-semibold disabled:opacity-60 whitespace-nowrap"
+                          >
+                            {sendingReset ? 'Sending...' : 'Send Link'}
+                          </button>
+                        </div>
+                      </form>
+                    )}
                   </div>
                 )}
 

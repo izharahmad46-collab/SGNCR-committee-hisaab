@@ -18,6 +18,7 @@ import {
   CheckCircle2,
   AlertCircle,
   Shield,
+  MessageSquare,
 } from 'lucide-react';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import { apiRequest, getAuthToken, setAuthToken, subscribeToLiveUpdates } from './lib/api';
@@ -38,6 +39,7 @@ import { CommitteeRemindersView } from './components/CommitteeRemindersView';
 import { ReportsAuditSettingsView } from './components/ReportsAuditSettingsView';
 import { AdminControlPanelView } from './components/AdminControlPanelView';
 import { OwnerControlPanelView } from './components/OwnerControlPanelView';
+import { GoogleChatView } from './components/GoogleChatView';
 import { PWAInstallButton, OfflineIndicator } from './components/PWAInstallButton';
 import {
   isAdminRole,
@@ -74,6 +76,7 @@ type NavKey =
   | 'approvals'
   | 'committee'
   | 'reminders'
+  | 'google_chat'
   | 'reports'
   | 'settings';
 
@@ -447,6 +450,7 @@ export default function App() {
     },
     { key: 'committee', label: t(lang, 'navCommittee'), icon: Crown },
     { key: 'reminders', label: t(lang, 'navReminders'), icon: Bell },
+    { key: 'google_chat', label: t(lang, 'navGoogleChat'), icon: MessageSquare },
     { key: 'reports', label: t(lang, 'navReports'), icon: FileBarChart2 },
     { key: 'settings', label: t(lang, 'navSettings'), icon: Settings },
   ];
@@ -776,6 +780,18 @@ export default function App() {
             />
           )}
 
+          {activeTab === 'google_chat' && (
+            <GoogleChatView
+              user={user}
+              lang={lang}
+              numerals={numerals}
+              summary={summary}
+              funds={funds}
+              settings={settings}
+              onNotify={showToast}
+            />
+          )}
+
           {(activeTab === 'reports' || activeTab === 'settings') && (
             <ReportsAuditSettingsView
               user={user}
@@ -830,7 +846,7 @@ export default function App() {
             onClick={() => setMobileMoreOpen(true)}
             className={`flex flex-col items-center justify-center gap-0.5 min-h-[48px] ${
               mobileMoreOpen ||
-              ['owner_panel', 'admin_panel', 'salaries', 'bank', 'approvals', 'committee', 'reminders', 'settings'].includes(activeTab)
+              ['owner_panel', 'admin_panel', 'salaries', 'bank', 'approvals', 'committee', 'reminders', 'google_chat', 'settings'].includes(activeTab)
                 ? 'text-[#0B4F32] dark:text-emerald-400 font-bold'
                 : 'text-slate-500 dark:text-slate-400'
             }`}

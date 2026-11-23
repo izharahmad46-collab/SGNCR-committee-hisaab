@@ -779,7 +779,7 @@ export const ReportsAuditSettingsView: React.FC<ReportsAuditSettingsViewProps> =
               <div className="flex items-center gap-2">
                 <ShieldCheck className="w-5 h-5 text-[#0B4F32] dark:text-emerald-400" />
                 <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">
-                  Authorized Administrators (Strict Maximum: 2)
+                  Authorized Administrators (Owner Controlled)
                 </h3>
               </div>
               <div className="divide-y divide-slate-100 dark:divide-slate-800">

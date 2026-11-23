@@ -2,6 +2,7 @@ import { initializeApp } from 'firebase/app';
 import {
   getAuth,
   GoogleAuthProvider,
+  onAuthStateChanged,
   sendPasswordResetEmail,
   signInWithPopup,
   signOut,
@@ -13,13 +14,62 @@ import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from 'fire
 import firebaseConfig from '../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
+const DEFAULT_FIRESTORE_DATABASE_ID =
+  'ai-studio-sgncommitteehisa-4450e72e-1580-4194-88a0-bed4a688229b';
+const configuredFirestoreDatabaseId =
+  (firebaseConfig as { firestoreDatabaseId?: string }).firestoreDatabaseId ||
+  DEFAULT_FIRESTORE_DATABASE_ID;
 
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+export const db = getFirestore(app, configuredFirestoreDatabaseId);
 export const auth = getAuth(app);
 export const functions = getFunctions(app, 'us-central1');
 export const storage = getStorage(app);
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
+
+// Configured Google Chat Workspace OAuth scopes (user-delegated scopes registered on the OAuth brand)
+export const GOOGLE_CHAT_SCOPES: string[] = [
+  'https://www.googleapis.com/auth/chat.admin.delete',
+  'https://www.googleapis.com/auth/chat.admin.memberships',
+  'https://www.googleapis.com/auth/chat.admin.memberships.readonly',
+  'https://www.googleapis.com/auth/chat.admin.spaces',
+  'https://www.googleapis.com/auth/chat.admin.spaces.readonly',
+  'https://www.googleapis.com/auth/chat.customemojis',
+  'https://www.googleapis.com/auth/chat.customemojis.readonly',
+  'https://www.googleapis.com/auth/chat.delete',
+  'https://www.googleapis.com/auth/chat.memberships',
+  'https://www.googleapis.com/auth/chat.memberships.app',
+  'https://www.googleapis.com/auth/chat.memberships.readonly',
+  'https://www.googleapis.com/auth/chat.messages',
+  'https://www.googleapis.com/auth/chat.messages.create',
+  'https://www.googleapis.com/auth/chat.messages.reactions',
+  'https://www.googleapis.com/auth/chat.messages.reactions.create',
+  'https://www.googleapis.com/auth/chat.messages.reactions.readonly',
+  'https://www.googleapis.com/auth/chat.messages.readonly',
+  'https://www.googleapis.com/auth/chat.spaces',
+  'https://www.googleapis.com/auth/chat.spaces.create',
+  'https://www.googleapis.com/auth/chat.spaces.readonly',
+  'https://www.googleapis.com/auth/chat.users.readstate',
+  'https://www.googleapis.com/auth/chat.users.readstate.readonly',
+  'https://www.googleapis.com/auth/chat.users.sections',
+  'https://www.googleapis.com/auth/chat.users.sections.readonly',
+  'https://www.googleapis.com/auth/chat.users.spacesettings',
+];
+
+export const googleChatProvider = new GoogleAuthProvider();
+GOOGLE_CHAT_SCOPES.forEach((scope) => googleChatProvider.addScope(scope));
+googleChatProvider.setCustomParameters({ prompt: 'select_account' });
+
+// Strict in-memory caching for Google Chat OAuth access token (never stored in localStorage/sessionStorage)
+let isSigningInGoogleChat = false;
+let cachedGoogleChatAccessToken: string | null = null;
+
+// Automatically clear in-memory access token whenever Firebase Auth signs out
+onAuthStateChanged(auth, (fbUser) => {
+  if (!fbUser) {
+    cachedGoogleChatAccessToken = null;
+  }
+});
 
 export async function uploadImageToFirebaseStorage(
   file: File,
@@ -50,7 +100,7 @@ export async function uploadImageToFirebaseStorage(
 }
 
 export const FIREBASE_PROJECT_ID = firebaseConfig.projectId;
-export const FIRESTORE_DATABASE_ID = firebaseConfig.firestoreDatabaseId;
+export const FIRESTORE_DATABASE_ID = configuredFirestoreDatabaseId;
 export const PRIMARY_ADMIN_EMAIL = 'izharahmad46@gmail.com';
 
 export enum OperationType {
@@ -114,7 +164,52 @@ export async function signInWithGoogle(): Promise<FirebaseUser> {
   return result.user;
 }
 
+export const GOOGLE_CHAT_CONSOLE_URL = `https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat?project=${FIREBASE_PROJECT_ID}`;
+
+export function initGoogleChatAuth(
+  onAuthSuccess?: (user: FirebaseUser, token: string) => void,
+  onAuthFailure?: () => void
+) {
+  return onAuthStateChanged(auth, (user: FirebaseUser | null) => {
+    if (user) {
+      if (cachedGoogleChatAccessToken) {
+        onAuthSuccess?.(user, cachedGoogleChatAccessToken);
+      } else if (!isSigningInGoogleChat) {
+        cachedGoogleChatAccessToken = null;
+        onAuthFailure?.();
+      }
+    } else {
+      cachedGoogleChatAccessToken = null;
+      onAuthFailure?.();
+    }
+  });
+}
+
+export async function signInWithGoogleChat(): Promise<{ user: FirebaseUser; accessToken: string }> {
+  try {
+    isSigningInGoogleChat = true;
+    const result = await signInWithPopup(auth, googleChatProvider);
+    const credential = GoogleAuthProvider.credentialFromResult(result);
+    if (!credential?.accessToken) {
+      throw new Error('Failed to obtain Google Chat OAuth access token from Google Sign-In.');
+    }
+    cachedGoogleChatAccessToken = credential.accessToken;
+    return { user: result.user, accessToken: cachedGoogleChatAccessToken };
+  } finally {
+    isSigningInGoogleChat = false;
+  }
+}
+
+export async function getGoogleChatAccessToken(): Promise<string | null> {
+  return cachedGoogleChatAccessToken;
+}
+
+export function clearGoogleChatAccessToken(): void {
+  cachedGoogleChatAccessToken = null;
+}
+
 export async function signOutFirebase(): Promise<void> {
+  cachedGoogleChatAccessToken = null;
   if (auth.currentUser) {
     await signOut(auth);
   }

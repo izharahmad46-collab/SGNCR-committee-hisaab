@@ -57,6 +57,7 @@ import {
 import { COMMITTEE_LOGO_URL, formatINR, formatMonthKey } from '../i18n/translations';
 import {
   isAdminRole,
+  isOwnerRole,
   isPrimaryAdminOrOwner,
   type AdminOverviewData,
   type AdminRoleAccount,
@@ -146,6 +147,7 @@ export function AdminControlPanelView({
   onNavigate,
 }: AdminControlPanelViewProps) {
   const isAdmin = isAdminRole(user.role);
+  const isOwner = isOwnerRole(user.role);
   const isSuperAdmin = isPrimaryAdminOrOwner(user.role);
 
   const [subTab, setSubTab] = useState<AdminSubTab>('overview');
@@ -2451,21 +2453,30 @@ export function AdminControlPanelView({
       {/* ================= TAB 7: ADMIN ROLES (MAX 2) & AUDIT LOG ================= */}
       {subTab === 'roles' && (
         <div className="space-y-5">
-          {/* Authorized Administrators (Max 2) */}
+          {/* Authorized Administrators (Owner Controlled) */}
           <div className="rounded-2xl bg-white dark:bg-[#121D18] border border-slate-200 dark:border-slate-800 p-5 space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <div>
                 <h2 className="text-sm font-bold text-slate-900 dark:text-slate-100">
-                  Authorized Administrators ({adminAccounts.length} / 2 Maximum Enforced)
+                  Authorized Administrators ({adminAccounts.length})
                 </h2>
                 <p className="text-xs text-slate-500">
-                  Strictly maximum 2 administrators enforced in Database triggers, Backend APIs, and Firestore Security Rules. Only Primary Super Admin can appoint or revoke Secondary Admin.
+                  Strictly controlled by the App Owner / Super Admin. Only the Owner can create, promote, suspend, or remove Administrator accounts.
                 </p>
               </div>
               <span className="text-xs font-bold px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 shrink-0">
-                {isSuperAdmin ? 'You are Super Admin' : 'Secondary Admin (View Only)'}
+                {isOwner ? 'You are App Owner (Full Control)' : 'Admin Role List (Owner Controlled)'}
               </span>
             </div>
+
+            {!isOwner && (
+              <div className="p-3 rounded-xl bg-amber-50/70 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/50 text-xs text-amber-900 dark:text-amber-200 flex items-center gap-2">
+                <Lock className="w-4 h-4 shrink-0" />
+                <span>
+                  Admins cannot create, promote, remove, or reset passwords of other Admins or the Owner. Use the Member Management tab to manage Members and reset Member passwords.
+                </span>
+              </div>
+            )}
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {adminAccounts.map((a, idx) => (
@@ -2475,14 +2486,21 @@ export function AdminControlPanelView({
                 >
                   <div className="space-y-1">
                     <div className="flex items-center gap-2">
-                      <Crown className={`w-4 h-4 ${a.role === 'admin_main' ? 'text-amber-500' : 'text-emerald-600'}`} />
+                      <Crown className={`w-4 h-4 ${a.role === 'owner' ? 'text-amber-500' : 'text-emerald-600'}`} />
                       <span className="text-sm font-bold">{a.fullName}</span>
                     </div>
                     <div className="text-xs font-data text-slate-500">
-                      Login ID: {a.username} · Slot #{idx + 1} · {a.role === 'admin_main' ? 'Primary Super Admin' : 'Secondary Admin'}
+                      Login ID: {a.username} · #{idx + 1} ·{' '}
+                      {a.role === 'owner'
+                        ? 'Owner / Super Admin'
+                        : a.role === 'admin_main'
+                        ? 'Primary Admin'
+                        : a.role === 'committee_admin'
+                        ? 'Committee Admin'
+                        : 'Secondary Admin'}
                     </div>
                   </div>
-                  {isSuperAdmin && a.role === 'admin_secondary' && (
+                  {isOwner && a.role === 'admin_secondary' && (
                     <button
                       type="button"
                       onClick={() => {
@@ -2498,14 +2516,14 @@ export function AdminControlPanelView({
               ))}
             </div>
 
-            {/* Super Admin Promote Member -> Secondary Admin (only when slot 2 is open) */}
-            {isSuperAdmin && canAddSecondaryAdmin && (
+            {/* Owner-Only Quick Promote Member -> Secondary Admin */}
+            {isOwner && canAddSecondaryAdmin && (
               <form
                 onSubmit={handlePromoteSecondaryAdmin}
                 className="p-4 rounded-xl border border-emerald-200 dark:border-emerald-900/50 bg-emerald-50/60 dark:bg-emerald-950/20 space-y-3"
               >
                 <div className="text-xs font-bold text-emerald-900 dark:text-emerald-300">
-                  Slot #2 Available — Appoint Secondary Administrator (Super Admin Only)
+                  Promote Active Member to Secondary Administrator (Owner Exclusive)
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                   <select
@@ -2569,19 +2587,31 @@ export function AdminControlPanelView({
                     <th className="px-3 py-2.5">Admin</th>
                     <th className="px-3 py-2.5">Action</th>
                     <th className="px-3 py-2.5">Entity</th>
-                    <th className="px-3 py-2.5">Reason / Details</th>
+                    <th className="px-3 py-2.5">Reason & Changes (Old → New)</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800/70">
-                  {filteredAuditLogs.slice(0, 60).map((log) => (
-                    <tr key={log.id}>
+                  {filteredAuditLogs.slice(0, 80).map((log) => (
+                    <tr key={log.id} className="align-top">
                       <td className="px-3 py-2 font-data text-[11px] whitespace-nowrap">
                         {new Date(log.timestamp).toLocaleString('en-IN')}
                       </td>
                       <td className="px-3 py-2 font-semibold">{log.adminName}</td>
                       <td className="px-3 py-2 font-data font-bold text-[#0B4F32] dark:text-emerald-400">{log.action}</td>
                       <td className="px-3 py-2 text-slate-500">{log.entityType}</td>
-                      <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{log.reason || '-'}</td>
+                      <td className="px-3 py-2 text-slate-600 dark:text-slate-300 space-y-1">
+                        <div>{log.reason || '-'}</div>
+                        {log.beforeData && (
+                          <div className="text-[10px] font-data text-slate-500 dark:text-slate-400 break-all">
+                            <span className="font-bold">OLD:</span> {log.beforeData.slice(0, 180)}
+                          </div>
+                        )}
+                        {log.afterData && (
+                          <div className="text-[10px] font-data text-emerald-700 dark:text-emerald-400 break-all">
+                            <span className="font-bold">NEW:</span> {log.afterData.slice(0, 180)}
+                          </div>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -2789,15 +2819,15 @@ export function AdminControlPanelView({
         </ModalShell>
       )}
 
-      {/* Member Login Access Modal */}
+      {/* Member Login Access & Password Reset Modal (Members Only) */}
       {accessModalMember && (
-        <ModalShell title={`Login Access — ${accessModalMember.memberCode} (${accessModalMember.fullName})`} onClose={() => setAccessModalMember(null)}>
+        <ModalShell title={`Member Password Reset & Access — ${accessModalMember.memberCode} (${accessModalMember.fullName})`} onClose={() => setAccessModalMember(null)}>
           <div className="space-y-4">
             <p className="text-xs text-slate-600 dark:text-slate-400">
-              Revoking access immediately logs out active sessions while preserving 100% of this member&apos;s contribution and receipt history.
+              Admins can reset Member passwords or pause Member login access here (Admin and Owner passwords cannot be modified here). Passwords are stored securely as bcrypt hashes only.
             </p>
             <div>
-              <label className="block text-xs font-semibold mb-1">Optional New Password (min 6 chars)</label>
+              <label className="block text-xs font-semibold mb-1">Reset Member Password (Optional, min 6 chars)</label>
               <input
                 type="password"
                 minLength={6}
