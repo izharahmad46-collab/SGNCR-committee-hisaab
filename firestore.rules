@@ -71,11 +71,12 @@ service cloud.firestore {
     // =========================================================================
     function isValidUserProfile(data, userId) {
       return data.keys().hasAll(['uid', 'email', 'displayName', 'role', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['uid', 'email', 'displayName', 'role', 'memberCode', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'email', 'displayName', 'role', 'phone', 'memberCode', 'createdAt', 'updatedAt'])
         && data.uid == userId
         && isNonEmptyString(data.email, 254)
         && isNonEmptyString(data.displayName, 120)
         && data.role in ['owner', 'admin_main', 'admin_secondary', 'committee_admin', 'member']
+        && isOptionalString(data, 'phone', 24)
         && isOptionalString(data, 'memberCode', 32)
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
@@ -83,10 +84,11 @@ service cloud.firestore {
 
     function isValidAdminRegistry(data, uid) {
       return data.keys().hasAll(['uid', 'email', 'fullName', 'role', 'slot', 'assignedByUid', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['uid', 'email', 'fullName', 'role', 'slot', 'assignedByUid', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'email', 'fullName', 'phone', 'role', 'slot', 'assignedByUid', 'createdAt', 'updatedAt'])
         && data.uid == uid
         && isNonEmptyString(data.email, 254)
         && isNonEmptyString(data.fullName, 120)
+        && isOptionalString(data, 'phone', 24)
         && data.role in ['owner', 'admin_main', 'admin_secondary', 'committee_admin']
         && data.slot is int && data.slot >= 1 && data.slot <= 20
         && isNonEmptyString(data.assignedByUid, 128)
@@ -455,12 +457,20 @@ service cloud.firestore {
       allow get: if isValidId(userId) && (isOwner(userId) || isOwnerAccount());
       allow list: if isOwnerAccount();
       allow create: if isValidId(userId)
-        && isOwner(userId)
         && isValidUserProfile(incoming(), userId)
-        && incoming().email == request.auth.token.email
-        && (incoming().role == 'member' || (isOwnerAccount() && incoming().role in ['owner', 'admin_main']))
         && incoming().createdAt == request.time
-        && incoming().updatedAt == request.time;
+        && incoming().updatedAt == request.time
+        && (
+          (
+            isOwner(userId)
+            && incoming().email == request.auth.token.email
+            && (incoming().role == 'member' || (isOwnerAccount() && incoming().role in ['owner', 'admin_main']))
+          )
+          || (
+            isOwnerAccount()
+            && incoming().role in ['admin_main', 'admin_secondary', 'committee_admin', 'member']
+          )
+        );
       allow update: if isValidId(userId)
         && isValidUserProfile(incoming(), userId)
         && incoming().createdAt == existing().createdAt
@@ -470,7 +480,7 @@ service cloud.firestore {
           || (
             isOwnerAccount()
             && (incoming().role != 'owner' || userId == request.auth.uid)
-            && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'role', 'memberCode', 'updatedAt'])
+            && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'role', 'phone', 'memberCode', 'updatedAt'])
           )
         );
       allow delete: if false;
@@ -493,7 +503,7 @@ service cloud.firestore {
         && (incoming().role != 'owner' || uid == request.auth.uid)
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'role', 'slot', 'updatedAt']);
+        && incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'phone', 'role', 'slot', 'updatedAt']);
       allow delete: if isValidId(uid) && isOwnerAccount() && uid != request.auth.uid;
     }
 

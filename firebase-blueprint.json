@@ -9,6 +9,7 @@
         "email": { "type": "string", "format": "email", "maxLength": 254 },
         "displayName": { "type": "string", "minLength": 1, "maxLength": 120 },
         "role": { "type": "string", "enum": ["owner", "admin_main", "admin_secondary", "committee_admin", "member"] },
+        "phone": { "type": "string", "maxLength": 24 },
         "memberCode": { "type": "string", "maxLength": 32 },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
@@ -23,6 +24,7 @@
         "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
         "email": { "type": "string", "format": "email", "maxLength": 254 },
         "fullName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "phone": { "type": "string", "maxLength": 24 },
         "role": { "type": "string", "enum": ["owner", "admin_main", "admin_secondary", "committee_admin"] },
         "slot": { "type": "integer", "minimum": 1, "maximum": 20 },
         "assignedByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
