@@ -4,7 +4,10 @@ import {
   doc,
   getDoc,
   getDocs,
+  limit,
   onSnapshot,
+  orderBy,
+  query,
   serverTimestamp,
   setDoc,
   updateDoc,
@@ -777,6 +780,37 @@ export async function appendAuditLogToFirestore(log: {
     return true;
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, path);
+  }
+}
+
+export async function fetchRecentFirestoreAuditLogs(maxEntries = 5): Promise<AuditLogRecord[]> {
+  const fbUser = auth.currentUser;
+  if (!fbUser || !fbUser.emailVerified) {
+    return [];
+  }
+
+  const safeLimit = Math.max(1, Math.min(Math.floor(maxEntries), 50));
+  const path = 'audit_logs';
+  try {
+    const q = query(collection(db, path), orderBy('timestamp', 'desc'), limit(safeLimit));
+    const snap = await getDocs(q);
+    return snap.docs.map((docSnap) => {
+      const d = docSnap.data();
+      return {
+        id: String(d.id || docSnap.id),
+        timestamp: String(d.timestamp || ''),
+        adminId: String(d.adminId || ''),
+        adminName: String(d.adminName || 'Admin'),
+        action: String(d.action || 'SYSTEM_ACTION'),
+        entityType: String(d.entityType || 'system'),
+        entityId: String(d.entityId || docSnap.id),
+        beforeData: typeof d.beforeData === 'string' ? d.beforeData : null,
+        afterData: typeof d.afterData === 'string' ? d.afterData : null,
+        reason: typeof d.reason === 'string' ? d.reason : '',
+      };
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, path);
   }
 }
 

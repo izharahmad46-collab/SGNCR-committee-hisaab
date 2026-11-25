@@ -38,6 +38,7 @@ import {
   t,
   toDisplayDigits,
 } from '../i18n/translations';
+import { RecentAdminActivityWidget } from './RecentAdminActivityWidget';
 
 interface DashboardViewProps {
   user: AuthUser;
@@ -303,17 +304,22 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       </section>
 
       {/* Quick Actions & Top 3 Recent High-Value Transactions */}
-      <section className="rounded-2xl bg-white dark:bg-[#121D18] border border-slate-200 dark:border-slate-800 p-5">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+      <section aria-label="Quick Actions" className="quick-actions-container sm:p-6">
+        <div className="quick-actions-header flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-start gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200/70 dark:border-emerald-900/60 flex items-center justify-center text-[#0B4F32] dark:text-emerald-400 shrink-0 mt-0.5">
+            <div className="w-9 h-9 rounded-xl bg-[#0B4F32] text-white dark:bg-emerald-500/20 dark:text-emerald-300 dark:border dark:border-emerald-500/30 flex items-center justify-center shrink-0 mt-0.5 shadow-xs">
               <Zap className="w-4 h-4" />
             </div>
             <div>
-              <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">
-                Quick Actions
-              </h2>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+              <div className="flex items-center gap-2">
+                <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">
+                  Quick Actions
+                </h2>
+                <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-md bg-[#0B4F32]/10 text-[#0B4F32] dark:bg-emerald-500/15 dark:text-emerald-300">
+                  Priority Activity
+                </span>
+              </div>
+              <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
                 Top {toDisplayDigits(3, numerals)} recent high-value transactions &amp; fast ledger entry
               </p>
             </div>
@@ -333,7 +339,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <button
               type="button"
               onClick={() => onNavigate('accounts', 'ledger')}
-              className="min-h-[40px] px-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 hover:border-[#0B4F32]/60 dark:hover:border-emerald-500 text-slate-700 dark:text-slate-200 text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap transition-colors"
+              className="min-h-[40px] px-3.5 py-2 rounded-xl bg-white/80 dark:bg-slate-900/70 border border-slate-200 dark:border-slate-700 hover:border-[#0B4F32]/60 dark:hover:border-emerald-500 text-slate-700 dark:text-slate-200 text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap transition-colors"
             >
               <span>{t(lang, 'viewAll')}</span>
               <ArrowRight className="w-3.5 h-3.5" />
@@ -352,7 +358,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   key={tx.id}
                   type="button"
                   onClick={() => onNavigate('accounts', 'ledger')}
-                  className="text-left p-4 rounded-xl bg-[#F6F8F7] dark:bg-[#0D1612] border border-slate-200/80 dark:border-slate-800 hover:border-[#0B4F32] dark:hover:border-emerald-500 transition-colors flex flex-col justify-between gap-3"
+                  className="quick-actions-card text-left p-4 flex flex-col justify-between gap-3"
                 >
                   <div className="flex items-center justify-between gap-2">
                     <span className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-slate-600 dark:text-slate-300">
@@ -584,6 +590,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
         </section>
       </div>
+
+      {/* Recent Admin Activity Transparency Feed (Last 5 Audit Log Entries) */}
+      <RecentAdminActivityWidget
+        lang={lang}
+        numerals={numerals}
+        refreshKey={`${recentTransactions.length}:${recentTransactions[0]?.id || ''}:${summary.totalBalance}`}
+        onNavigate={onNavigate}
+      />
     </div>
   );
 };

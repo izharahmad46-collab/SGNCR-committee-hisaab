@@ -3293,8 +3293,10 @@ app.post('/api/notifications/mark-read', requireAuth, (_req, res) => {
 });
 
 // ---------- AUDIT LOG ----------
-app.get('/api/audit-logs', requireAuth, (_req, res) => {
-  const rows = db.prepare(`SELECT * FROM audit_logs ORDER BY timestamp DESC LIMIT 200`).all() as Array<any>;
+app.get('/api/audit-logs', requireAuth, (req, res) => {
+  const rawLimit = Number(req.query.limit);
+  const safeLimit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(Math.floor(rawLimit), 200) : 200;
+  const rows = db.prepare(`SELECT * FROM audit_logs ORDER BY timestamp DESC LIMIT ?`).all(safeLimit) as Array<any>;
   res.json({
     logs: rows.map((r) => ({
       id: r.id,
