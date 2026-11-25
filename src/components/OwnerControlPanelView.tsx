@@ -27,13 +27,20 @@ import {
   Download,
   Mail,
   Send,
+  Phone,
+  UserPlus,
 } from 'lucide-react';
 import { apiRequest, downloadAppSourceZip } from '../lib/api';
-import { signInWithGoogle, invokePasswordResetCloudFunction } from '../firebase';
+import {
+  signInWithGoogle,
+  invokePasswordResetCloudFunction,
+  provisionFirebaseAuthAdminUser,
+} from '../firebase';
 import {
   syncSettingsToFirestore,
   syncBankUpiToFirestore,
   appendAuditLogToFirestore,
+  assignFirestoreAdminRole,
 } from '../lib/firestoreSync';
 import type {
   AdminPermissions,
@@ -185,6 +192,20 @@ export const OwnerControlPanelView: React.FC<OwnerControlPanelViewProps> = ({
     createMemberProfile: false,
     village: 'Ragdih, Chalkusha',
     monthlyAmount: 500,
+    permissions: { ...DEFAULT_PERMS },
+  });
+
+  // Dedicated 'Create New Admin' Modal (Firebase Auth + Firestore Role Assignment + SQLite Sync)
+  const [showCreateAdminModal, setShowCreateAdminModal] = useState(false);
+  const [creatingFirebaseAdmin, setCreatingFirebaseAdmin] = useState(false);
+  const [createAdminError, setCreateAdminError] = useState('');
+  const [createAdminForm, setCreateAdminForm] = useState({
+    fullName: '',
+    email: '',
+    phone: '',
+    role: 'committee_admin' as 'admin_main' | 'admin_secondary' | 'committee_admin',
+    initialPassword: '',
+    sendResetEmail: true,
     permissions: { ...DEFAULT_PERMS },
   });
 
@@ -833,21 +854,129 @@ export const OwnerControlPanelView: React.FC<OwnerControlPanelViewProps> = ({
   });
 
   function openCreateNewAdminFlow() {
-    setNewAcct({
-      username: '',
+    setCreateAdminError('');
+    setCreateAdminForm({
       fullName: '',
-      password: '',
-      role: 'committee_admin',
+      email: '',
       phone: '',
-      firebaseEmail: '',
-      accountStatus: 'active',
-      createMemberProfile: false,
-      village: 'Ragdih, Chalkusha',
-      monthlyAmount: settings?.defaultMonthlyContribution || 500,
+      role: 'committee_admin',
+      initialPassword: '',
+      sendResetEmail: true,
       permissions: { ...DEFAULT_PERMS },
     });
-    setSubTab('accounts');
-    setShowCreateAcct(true);
+    setShowCreateAdminModal(true);
+  }
+
+  async function handleProvisionFirebaseAdmin(e: React.FormEvent) {
+    e.preventDefault();
+    setCreateAdminError('');
+
+    const cleanName = createAdminForm.fullName.trim();
+    const cleanEmail = createAdminForm.email.trim().toLowerCase();
+    const cleanPhone = createAdminForm.phone.trim();
+    const cleanPass = createAdminForm.initialPassword;
+
+    if (cleanName.length < 2) {
+      setCreateAdminError('Please enter the Admin Full Name.');
+      return;
+    }
+    if (!/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(cleanEmail)) {
+      setCreateAdminError('Please enter a valid Admin Email address.');
+      return;
+    }
+    if (cleanPhone.replace(/\D/g, '').length < 10) {
+      setCreateAdminError('Please enter a valid 10-digit Mobile Number.');
+      return;
+    }
+    if (cleanPass && cleanPass.length < 8) {
+      setCreateAdminError('Initial password must be at least 8 characters (or leave blank to auto-send a secure Firebase reset link).');
+      return;
+    }
+
+    setCreatingFirebaseAdmin(true);
+    try {
+      // 1) Ensure verified Owner Firebase session is active before provisioning
+      let activeFbUser = firebaseUser;
+      if (!activeFbUser || !activeFbUser.emailVerified) {
+        activeFbUser = await onConnectFirebase();
+      }
+      if (!activeFbUser || !activeFbUser.emailVerified) {
+        throw new Error('Verified Owner Firebase sign-in is required to create a Firebase Admin.');
+      }
+
+      // 2) Create Firebase Auth user (Cloud Function first, isolated secondary app fallback)
+      const provisioned = await provisionFirebaseAuthAdminUser({
+        fullName: cleanName,
+        email: cleanEmail,
+        phone: cleanPhone,
+        role: createAdminForm.role,
+        initialPassword: cleanPass || undefined,
+        sendResetEmail: createAdminForm.sendResetEmail,
+      });
+
+      // 3) Assign Firestore Admin role atomically (/users/{uid}, /admins/{uid}, /audit_logs/{id})
+      let assignedSlot: number | null = null;
+      if (!provisioned.firestoreAssignedByFunction) {
+        const fsRes = await assignFirestoreAdminRole({
+          uid: provisioned.uid,
+          email: provisioned.email,
+          fullName: cleanName,
+          phone: cleanPhone,
+          role: createAdminForm.role,
+          assignedByName: user.fullName,
+        });
+        assignedSlot = fsRes.slot;
+      }
+
+      // 4) Sync Admin account to Express/SQLite committee database (bcrypt hashed, never plaintext)
+      const fallbackLocalPass =
+        cleanPass ||
+        `Sgn#${Array.from(crypto.getRandomValues(new Uint8Array(12)))
+          .map((b) => (b % 36).toString(36))
+          .join('')}9!`;
+      let localSynced = true;
+      try {
+        await apiRequest('/api/owner/accounts', {
+          method: 'POST',
+          body: {
+            username: cleanEmail,
+            fullName: cleanName,
+            password: fallbackLocalPass,
+            role: createAdminForm.role,
+            phone: cleanPhone,
+            firebaseEmail: cleanEmail,
+            accountStatus: 'active',
+            permissions: createAdminForm.permissions,
+          },
+        });
+      } catch (localErr: any) {
+        // If local SQLite account already exists with this email/ID, update it instead
+        const msg = String(localErr?.message || '');
+        if (!msg.toLowerCase().includes('already exists')) {
+          localSynced = false;
+        }
+      }
+
+      const resetNote = provisioned.resetEmailSent
+        ? ' A Firebase password setup/reset email has been sent.'
+        : '';
+      const slotNote = assignedSlot ? ` (Admin Slot #${assignedSlot})` : '';
+      const syncNote = localSynced ? '' : ' (Note: Refresh accounts to review local sync.)';
+
+      onNotify(
+        `New Admin "${cleanName}" (${cleanEmail}) created in Firebase Auth and assigned "${roleLabel(createAdminForm.role)}" in Firestore${slotNote}.${resetNote}${syncNote}`,
+        'success'
+      );
+
+      setShowCreateAdminModal(false);
+      await Promise.all([fetchOverview(), onRefresh()]);
+    } catch (err: any) {
+      const msg = err?.message || 'Failed to create Firebase Admin account.';
+      setCreateAdminError(msg);
+      onNotify(msg, 'error');
+    } finally {
+      setCreatingFirebaseAdmin(false);
+    }
   }
 
   function handleExportActivityReportCSV() {
@@ -2844,6 +2973,212 @@ export const OwnerControlPanelView: React.FC<OwnerControlPanelViewProps> = ({
           <strong>Single-Owner & Data Safety Guarantee:</strong> All existing committee funds, ledgers, transactions, member dues, salaries, and Firebase settings remain intact. Every Owner action is permanently recorded in the immutable audit log.
         </div>
       </div>
+
+      {/* Dedicated 'Create New Admin' Modal (Firebase Auth Creation + Firestore Role Assignment) */}
+      {showCreateAdminModal && (
+        <div className="fixed inset-0 z-50 bg-black/55 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+          <form
+            onSubmit={handleProvisionFirebaseAdmin}
+            className="w-full max-w-xl rounded-2xl bg-white dark:bg-[#121D18] border border-slate-200 dark:border-slate-800 p-5 sm:p-6 space-y-4 shadow-2xl my-auto"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="space-y-1">
+                <div className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-[#0B4F32] dark:text-emerald-400">
+                  <UserPlus className="w-4 h-4" />
+                  <span>Owner Exclusive · Firebase Auth &amp; Firestore Role</span>
+                </div>
+                <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100">
+                  Create New Admin
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Securely creates a Firebase Authentication account, assigns the Admin role in Firestore (<span className="font-data">/users</span> &amp; <span className="font-data">/admins</span>), and logs the event in the immutable audit trail.
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={creatingFirebaseAdmin}
+                onClick={() => setShowCreateAdminModal(false)}
+                aria-label="Close modal"
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {!firebaseUser?.emailVerified && (
+              <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/60 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-amber-900 dark:text-amber-200">
+                <div className="flex items-start gap-2">
+                  <Cloud className="w-4 h-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
+                  <span>
+                    Connect your verified Owner Google account (<span className="font-data">{overview?.protectedBranding.primaryOwnerEmail || user.firebaseEmail}</span>) to authorize Firebase Auth &amp; Firestore role assignment.
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  disabled={creatingFirebaseAdmin}
+                  onClick={() => void onConnectFirebase()}
+                  className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold shrink-0"
+                >
+                  Connect Firebase
+                </button>
+              </div>
+            )}
+
+            {createAdminError && (
+              <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900/60 text-rose-700 dark:text-rose-300 text-xs flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>{createAdminError}</span>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+              <div className="sm:col-span-2">
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  Admin Name *
+                </label>
+                <input
+                  type="text"
+                  required
+                  maxLength={120}
+                  value={createAdminForm.fullName}
+                  onChange={(e) => setCreateAdminForm({ ...createAdminForm, fullName: e.target.value })}
+                  placeholder="e.g. Md. Farooq Alam"
+                  className="w-full min-h-[42px] px-3.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm focus:outline-none focus:ring-2 focus:ring-[#0B4F32]"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  Admin Email Address *
+                </label>
+                <div className="relative">
+                  <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="email"
+                    required
+                    maxLength={254}
+                    value={createAdminForm.email}
+                    onChange={(e) => setCreateAdminForm({ ...createAdminForm, email: e.target.value })}
+                    placeholder="admin@example.com"
+                    className="w-full min-h-[42px] pl-9 pr-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm font-data focus:outline-none focus:ring-2 focus:ring-[#0B4F32]"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  Mobile Number *
+                </label>
+                <div className="relative">
+                  <Phone className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="tel"
+                    required
+                    maxLength={24}
+                    value={createAdminForm.phone}
+                    onChange={(e) => setCreateAdminForm({ ...createAdminForm, phone: e.target.value })}
+                    placeholder="+91 9876543210"
+                    className="w-full min-h-[42px] pl-9 pr-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm font-data focus:outline-none focus:ring-2 focus:ring-[#0B4F32]"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  Firestore Admin Role *
+                </label>
+                <select
+                  value={createAdminForm.role}
+                  onChange={(e) =>
+                    setCreateAdminForm({
+                      ...createAdminForm,
+                      role: e.target.value as 'admin_main' | 'admin_secondary' | 'committee_admin',
+                    })
+                  }
+                  className="w-full min-h-[42px] px-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm focus:outline-none focus:ring-2 focus:ring-[#0B4F32]"
+                >
+                  <option value="committee_admin">Committee Admin</option>
+                  <option value="admin_main">Primary Admin</option>
+                  <option value="admin_secondary">Secondary Admin</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  Initial Password (Optional, min 8 chars)
+                </label>
+                <input
+                  type="password"
+                  minLength={8}
+                  value={createAdminForm.initialPassword}
+                  onChange={(e) => setCreateAdminForm({ ...createAdminForm, initialPassword: e.target.value })}
+                  placeholder="Leave blank to email secure setup link"
+                  className="w-full min-h-[42px] px-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm focus:outline-none focus:ring-2 focus:ring-[#0B4F32]"
+                />
+              </div>
+            </div>
+
+            <label className="flex items-start gap-2.5 p-3 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/25 border border-emerald-200 dark:border-emerald-900/50 text-xs text-slate-700 dark:text-slate-200 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={createAdminForm.sendResetEmail}
+                onChange={(e) => setCreateAdminForm({ ...createAdminForm, sendResetEmail: e.target.checked })}
+                className="mt-0.5 rounded border-slate-300 text-[#0B4F32] focus:ring-[#0B4F32]"
+              />
+              <span>
+                <strong>Send Firebase Password Setup / Reset Email</strong> automatically so the new Admin can securely choose their own private password (never stored in plain text).
+              </span>
+            </label>
+
+            <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 space-y-2">
+              <div className="text-xs font-bold text-slate-700 dark:text-slate-200">
+                Admin Permissions (Owner Controlled)
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {PERM_LABELS.map((p) => (
+                  <label key={p.key} className="inline-flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={createAdminForm.permissions[p.key]}
+                      onChange={(e) =>
+                        setCreateAdminForm({
+                          ...createAdminForm,
+                          permissions: { ...createAdminForm.permissions, [p.key]: e.target.checked },
+                        })
+                      }
+                      className="rounded border-slate-300 text-[#0B4F32] focus:ring-[#0B4F32]"
+                    />
+                    <span>{p.label}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-end gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+              <button
+                type="button"
+                disabled={creatingFirebaseAdmin}
+                onClick={() => setShowCreateAdminModal(false)}
+                className="min-h-[42px] px-4 rounded-xl border border-slate-300 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={creatingFirebaseAdmin}
+                className="min-h-[42px] px-5 rounded-xl bg-[#0B4F32] hover:bg-[#093F28] disabled:opacity-60 text-white text-xs sm:text-sm font-bold inline-flex items-center gap-2 transition-colors"
+              >
+                <ShieldCheck className="w-4 h-4" />
+                <span>
+                  {creatingFirebaseAdmin
+                    ? 'Creating Firebase Admin & Assigning Role...'
+                    : 'Create Admin & Assign Firebase Role'}
+                </span>
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   );
 };

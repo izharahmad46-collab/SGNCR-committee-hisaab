@@ -1,11 +1,15 @@
-import { initializeApp } from 'firebase/app';
+import { deleteApp, initializeApp } from 'firebase/app';
 import {
+  createUserWithEmailAndPassword,
   getAuth,
   GoogleAuthProvider,
+  inMemoryPersistence,
   onAuthStateChanged,
   sendPasswordResetEmail,
+  setPersistence,
   signInWithPopup,
   signOut,
+  updateProfile,
   type User as FirebaseUser,
 } from 'firebase/auth';
 import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
@@ -295,6 +299,180 @@ export async function invokePasswordResetCloudFunction(params: {
 
   const fallback = await triggerFirebasePasswordResetEmail(cleanEmail);
   return { email: fallback.email, dispatchedVia: 'firebase_auth_sdk' };
+}
+
+export interface ProvisionFirebaseAdminParams {
+  fullName: string;
+  email: string;
+  phone: string;
+  role: 'admin_main' | 'admin_secondary' | 'committee_admin';
+  initialPassword?: string;
+  sendResetEmail?: boolean;
+}
+
+export interface ProvisionFirebaseAdminResult {
+  uid: string;
+  email: string;
+  role: 'admin_main' | 'admin_secondary' | 'committee_admin';
+  authUserCreated: boolean;
+  firestoreAssignedByFunction: boolean;
+  resetEmailSent: boolean;
+  dispatchedVia: 'cloud_function' | 'secondary_auth_app';
+}
+
+function generateStrongTemporaryPassword(): string {
+  const bytes = new Uint8Array(18);
+  crypto.getRandomValues(bytes);
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%&*';
+  let out = 'Sgn#9';
+  for (let i = 0; i < bytes.length; i += 1) {
+    out += chars[bytes[i] % chars.length];
+  }
+  return out;
+}
+
+/**
+ * Creates a Firebase Authentication user for a newly appointed Admin without
+ * interrupting the currently signed-in Owner's Firebase session.
+ *
+ * 1) Tries the deployed Callable Cloud Function `createAdminAccount` first.
+ * 2) Falls back to an isolated ephemeral secondary Firebase App instance using
+ *    in-memory persistence so the Owner stays signed in on the primary app.
+ */
+export async function provisionFirebaseAuthAdminUser(
+  params: ProvisionFirebaseAdminParams
+): Promise<ProvisionFirebaseAdminResult> {
+  const cleanName = String(params.fullName || '').trim().slice(0, 120);
+  const cleanEmail = String(params.email || '').trim().toLowerCase().slice(0, 254);
+  const cleanPhone = String(params.phone || '').trim().slice(0, 24);
+  const cleanRole = params.role;
+
+  if (!cleanName || cleanName.length < 2) {
+    throw new Error('Admin Name is required.');
+  }
+  if (!cleanEmail || !/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(cleanEmail)) {
+    throw new Error('Please enter a valid Admin Email address.');
+  }
+  if (cleanEmail === PRIMARY_ADMIN_EMAIL.toLowerCase()) {
+    throw new Error('The Primary Owner email cannot be created as a secondary Admin.');
+  }
+  if (!auth.currentUser || !auth.currentUser.emailVerified) {
+    throw new Error('Please connect your verified Owner Firebase account before creating a Firebase Admin.');
+  }
+
+  // 1) Prefer Callable Cloud Function when deployed
+  try {
+    const createAdminFn = httpsCallable<
+      ProvisionFirebaseAdminParams,
+      {
+        ok: boolean;
+        uid: string;
+        email: string;
+        role: 'admin_main' | 'admin_secondary' | 'committee_admin';
+        authUserCreated: boolean;
+        resetEmailSent: boolean;
+      }
+    >(functions, 'createAdminAccount');
+
+    const res = await createAdminFn({
+      fullName: cleanName,
+      email: cleanEmail,
+      phone: cleanPhone,
+      role: cleanRole,
+      initialPassword: params.initialPassword || undefined,
+      sendResetEmail: params.sendResetEmail !== false,
+    });
+
+    if (res.data?.ok && res.data?.uid) {
+      return {
+        uid: res.data.uid,
+        email: res.data.email || cleanEmail,
+        role: res.data.role || cleanRole,
+        authUserCreated: Boolean(res.data.authUserCreated),
+        firestoreAssignedByFunction: true,
+        resetEmailSent: Boolean(res.data.resetEmailSent),
+        dispatchedVia: 'cloud_function',
+      };
+    }
+  } catch (err: any) {
+    const code = String(err?.code || '');
+    if (
+      code === 'functions/permission-denied' ||
+      code === 'functions/invalid-argument' ||
+      code === 'functions/unauthenticated'
+    ) {
+      throw new Error(err?.message || 'Cloud Function rejected Admin creation.');
+    }
+    // Otherwise fall through to isolated secondary Firebase App client provisioning
+  }
+
+  // 2) Secondary isolated Firebase App with inMemoryPersistence (keeps Owner session untouched)
+  const passwordToUse =
+    params.initialPassword && params.initialPassword.length >= 8
+      ? params.initialPassword
+      : generateStrongTemporaryPassword();
+
+  const tempAppName = `admin-provisioner-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  const secondaryApp = initializeApp(firebaseConfig, tempAppName);
+  const secondaryAuth = getAuth(secondaryApp);
+
+  let createdUid = '';
+  try {
+    await setPersistence(secondaryAuth, inMemoryPersistence);
+    const cred = await createUserWithEmailAndPassword(secondaryAuth, cleanEmail, passwordToUse);
+    createdUid = cred.user.uid;
+    try {
+      await updateProfile(cred.user, { displayName: cleanName });
+    } catch {
+      // Non-fatal: Firestore profile stores authoritative fullName
+    }
+    await signOut(secondaryAuth);
+  } catch (err: any) {
+    const code = String(err?.code || '');
+    if (code === 'auth/email-already-in-use') {
+      throw new Error(
+        `A Firebase Auth account already exists for "${cleanEmail}". If this user already has a Firebase account, link their email via Edit Account or send them a Password Reset Email.`
+      );
+    }
+    if (code === 'auth/operation-not-allowed') {
+      throw new Error(
+        'Email/Password authentication is not enabled yet in Firebase Console. Enable it at Firebase Console → Authentication → Sign-in method → Email/Password, then try again.'
+      );
+    }
+    if (code === 'auth/weak-password') {
+      throw new Error('Password is too weak. Please enter a stronger password (at least 8 characters).');
+    }
+    if (code === 'auth/invalid-email') {
+      throw new Error('The Admin email address format is invalid.');
+    }
+    throw new Error(err?.message || 'Failed to create Firebase Auth account for the new Admin.');
+  } finally {
+    try {
+      await deleteApp(secondaryApp);
+    } catch {
+      // Ignore cleanup error
+    }
+  }
+
+  let resetEmailSent = false;
+  if (params.sendResetEmail !== false) {
+    try {
+      await sendPasswordResetEmail(auth, cleanEmail);
+      resetEmailSent = true;
+    } catch {
+      resetEmailSent = false;
+    }
+  }
+
+  return {
+    uid: createdUid,
+    email: cleanEmail,
+    role: cleanRole,
+    authUserCreated: true,
+    firestoreAssignedByFunction: false,
+    resetEmailSent,
+    dispatchedVia: 'secondary_auth_app',
+  };
 }
 
 async function testConnection() {

@@ -168,6 +168,112 @@ export async function ensureFirebaseUserProfile(
   return { role: 'member' };
 }
 
+/**
+ * Atomically assigns a newly created Firebase Auth user's Admin role in Firestore
+ * by writing `/users/{uid}`, `/admins/{uid}`, and an immutable `/audit_logs/{id}`
+ * entry under the currently signed-in Owner's verified session.
+ */
+export async function assignFirestoreAdminRole(params: {
+  uid: string;
+  email: string;
+  fullName: string;
+  phone?: string;
+  role: 'admin_main' | 'admin_secondary' | 'committee_admin';
+  assignedByName?: string;
+}): Promise<{ slot: number; auditLogId: string }> {
+  const fbUser = auth.currentUser;
+  if (!fbUser || !fbUser.emailVerified || !isPrimaryFirebaseAdmin(fbUser)) {
+    throw new Error('Only the verified Primary App Owner can assign Admin roles in Firestore.');
+  }
+
+  const targetUid = sanitizeId(params.uid);
+  const cleanEmail = clip(params.email, 254).toLowerCase();
+  const cleanName = clip(params.fullName, 120);
+  const cleanPhone = clip(params.phone || '', 24);
+  const cleanRole: 'admin_main' | 'admin_secondary' | 'committee_admin' =
+    params.role === 'admin_main' || params.role === 'admin_secondary' ? params.role : 'committee_admin';
+
+  // Determine next available slot (2..20) in /admins
+  let nextSlot = 2;
+  try {
+    const adminsSnap = await getDocs(collection(db, 'admins'));
+    const usedSlots = new Set<number>();
+    adminsSnap.forEach((docSnap) => {
+      const s = Number(docSnap.data()?.slot || 0);
+      if (s >= 1 && s <= 20) usedSlots.add(s);
+    });
+    while (usedSlots.has(nextSlot) && nextSlot < 20) {
+      nextSlot += 1;
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, 'admins');
+  }
+
+  const triggeredAt = new Date().toISOString();
+  const auditLogId = sanitizeId(`aud_admin_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+
+  const userPayload: Record<string, unknown> = {
+    uid: targetUid,
+    email: cleanEmail,
+    displayName: cleanName,
+    role: cleanRole,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+  if (cleanPhone) {
+    userPayload.phone = cleanPhone;
+  }
+
+  const adminPayload: Record<string, unknown> = {
+    uid: targetUid,
+    email: cleanEmail,
+    fullName: cleanName,
+    role: cleanRole,
+    slot: nextSlot,
+    assignedByUid: fbUser.uid,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+  if (cleanPhone) {
+    adminPayload.phone = cleanPhone;
+  }
+
+  const auditPayload: Record<string, unknown> = {
+    id: auditLogId,
+    timestamp: triggeredAt,
+    adminId: clip(fbUser.uid, 128),
+    adminName: clip(params.assignedByName || fbUser.displayName || fbUser.email || 'App Owner', 120),
+    action: 'OWNER_FIREBASE_ADMIN_PROVISIONED',
+    entityType: 'admins',
+    entityId: targetUid,
+    reason: clip(`Owner created Firebase Auth Admin (${cleanEmail}) and assigned Firestore role ${cleanRole}`, 500),
+    afterData: clip(
+      JSON.stringify({
+        uid: targetUid,
+        email: cleanEmail,
+        fullName: cleanName,
+        phone: cleanPhone,
+        role: cleanRole,
+        slot: nextSlot,
+        assignedByUid: fbUser.uid,
+      }),
+      4000
+    ),
+    createdAt: serverTimestamp(),
+  };
+
+  try {
+    const batch = writeBatch(db);
+    batch.set(doc(db, 'users', targetUid), userPayload);
+    batch.set(doc(db, 'admins', targetUid), adminPayload);
+    batch.set(doc(db, 'audit_logs', auditLogId), auditPayload);
+    await batch.commit();
+    return { slot: nextSlot, auditLogId };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `users/${targetUid},admins/${targetUid}`);
+  }
+}
+
 export async function syncCommitteeLedgerToFirestore(
   payload: CloudSyncPayload,
   fbUser: FirebaseUser
